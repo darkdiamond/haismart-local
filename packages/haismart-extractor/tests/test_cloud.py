@@ -1,0 +1,311 @@
+import hashlib
+import json
+
+import pytest
+
+from haismart_extractor.cloud import (
+    DEVICE_LIST_PATH,
+    DEVICE_MODEL_PATH,
+    LOGIN_PATH,
+    AppCredentials,
+    CloudError,
+    Domains,
+    HaierCloud,
+    LoginResult,
+    Request,
+    Response,
+    device_center_sign,
+    device_center_sign_payload,
+    encrypt_login_password,
+)
+
+
+class Capture:
+    """Fake transport: records the request, returns a canned response. No network."""
+
+    def __init__(self, response: Response) -> None:
+        self.response = response
+        self.request: Request | None = None
+
+    async def __call__(self, req: Request) -> Response:
+        self.request = req
+        return self.response
+
+
+# --- signing (golden: locks the recovered algorithm) --------------------------
+
+
+def test_sign_payload_exact_order() -> None:
+    # sign = path + stripWs(body) + appId + appKey + timestamp
+    payload = device_center_sign_payload(
+        "MB-UZHSH", "appkey123", "1700000000000", '{"deviceId":"D1"}', "/rcs/device/7d/query"
+    )
+    assert payload == "/rcs/device/7d/query" + '{"deviceId":"D1"}' + "MB-UZHSH" + "appkey123" + "1700000000000"
+
+
+def test_sign_is_lowercase_sha256_hex() -> None:
+    s = device_center_sign(
+        "MB-UZHSH", "appkey123", "1700000000000", '{"deviceId":"D1"}', "/rcs/device/7d/query"
+    )
+    expected = hashlib.sha256(
+        ("/rcs/device/7d/query" + '{"deviceId":"D1"}' + "MB-UZHSH" + "appkey123" + "1700000000000").encode()
+    ).hexdigest()
+    assert s == expected
+    assert len(s) == 64 and s == s.lower()
+
+
+def test_body_whitespace_stripped_for_sign() -> None:
+    assert device_center_sign_payload("a", "k", "1", '{ "x": 1 }', "/p") == "/p" + '{"x":1}' + "a" + "k" + "1"
+
+
+def test_appkey_trimmed_and_dequoted() -> None:
+    # appKey is .trim()'d and has '"' removed before hashing.
+    assert device_center_sign_payload("a", ' "k" ', "1", "{}", "/p") == "/p{}ak1"
+
+
+# --- request pipeline ---------------------------------------------------------
+
+
+async def test_device_center_request_pipeline() -> None:
+    creds = AppCredentials(app_id="MB-UZHSH", app_key="secretKey!!", client_id="CID123")
+    cap = Capture(Response(200, json.dumps({"retCode": "00000", "data": {}})))
+    cloud = HaierCloud(creds, access_token="TOKEN", transport=cap)
+
+    out = await cloud.get_device_7d("DEV1")
+
+    req = cap.request
+    assert req is not None
+    assert req.method == "POST"
+    assert req.url == "https://uws-sgp.haieriot.net/rcs/device/7d/query"
+    assert req.body == '{"deviceId":"DEV1"}'  # compact JSON
+    h = req.headers
+    assert h["appId"] == "MB-UZHSH"
+    assert h["appVersion"] == "5.5.0"
+    assert h["apiVersion"] == "v1"
+    assert h["clientId"] == "CID123"
+    assert h["accessToken"] == "TOKEN"
+    assert h["sequenceId"] == h["timestamp"] + "000010"
+    assert h["language"] == "en-us" and h["timezone"] == "8"
+    assert h["zoneInfo"] == "0"  # default; account/refreshToken needs a real value
+    assert h["Content-Type"] == "application/json;charset=UTF-8"
+    # sign is internally consistent with the recovered formula
+    assert h["sign"] == device_center_sign(
+        "MB-UZHSH", "secretKey!!", h["timestamp"], req.body, "/rcs/device/7d/query"
+    )
+    assert out["retCode"] == "00000"
+
+
+async def test_non_200_raises_cloud_error() -> None:
+    cloud = HaierCloud(AppCredentials("a", "k", "c"), "T", transport=Capture(Response(401, "denied")))
+    with pytest.raises(CloudError):
+        await cloud.get_device_7d("D")
+
+
+async def test_refresh_token_pipeline_and_parse() -> None:
+    # canned response mirrors the live  shape (accountToken rotates; refreshToken reused)
+    resp_json = json.dumps({
+        "retCode": "00000", "retInfo": "Operation succeeded",
+        "data": {"accountToken": "2_NEWACCESS", "refreshToken": "2_RT", "expiresIn": "863999",
+                 "uhomeUserId": "375071370301804544", "scope": "users.admin", "tokenType": "bearer"},
+    })
+    cap = Capture(Response(200, resp_json))
+    creds = AppCredentials(app_id="MB-UZHSH", app_key="secretKey!!", client_id="8E57TERMINAL")
+    cloud = HaierCloud(creds, access_token="OLD", zone_info="66", transport=cap)
+
+    result = await cloud.refresh_token("2_RT")
+
+    req = cap.request
+    assert req.method == "POST"
+    assert req.url == "https://uhome-sgp.haieriot.net/uplussea/accounts/v1/user/refreshToken"
+    assert req.body == '{"refreshToken":"2_RT"}'          # compact, single field
+    assert req.headers["zoneInfo"] == "66"                 # the piece that fixes retCode 30003
+    assert req.headers["clientId"] == "8E57TERMINAL"       # per-install terminal id
+    assert req.headers["sign"] == device_center_sign(
+        "MB-UZHSH", "secretKey!!", req.headers["timestamp"], req.body,
+        "/uplussea/accounts/v1/user/refreshToken",
+    )
+    # parsed result + the client's access token is refreshed in place
+    assert result.access_token == "2_NEWACCESS"
+    assert result.refresh_token == "2_RT" and result.expires_in == 863999
+    assert cloud.access_token == "2_NEWACCESS"
+
+
+async def test_refresh_token_bad_retcode_raises() -> None:
+    cap = Capture(Response(200, json.dumps({"retCode": "30003", "retInfo": "Authorization exception"})))
+    cloud = HaierCloud(AppCredentials("a", "k", "c"), "T", transport=cap)
+    with pytest.raises(CloudError):
+        await cloud.refresh_token("2_RT")
+
+
+async def test_get_digital_model_parses_stringified_detailinfo() -> None:
+    # the model comes back as a stringified JSON under detailInfo[deviceId]
+    import json as _json
+    model = {"attributes": [{"name": "operationMode", "valueRange": {"type": "LIST"}}]}
+    resp = _json.dumps({"retCode": "00000", "detailInfo": {"DEV1": _json.dumps(model)}})
+    cap = Capture(Response(200, resp))
+    cloud = HaierCloud(AppCredentials("a", "k", "CID"), "TOKEN", transport=cap)
+
+    out = await cloud.get_digital_model("DEV1")
+
+    assert cap.request.method == "POST"
+    assert cap.request.url == "https://uws-sgp.haieriot.net/shadow/v1/devdigitalmodels"
+    assert cap.request.body == '{"deviceInfoList":[{"deviceId":"DEV1"}]}'
+    assert out == model  # parsed dict, ready for profile_from_device_config
+
+
+async def test_list_devices_v2_parses_account_devices() -> None:
+    # mirrors the live device-list shape: baseInfo.{deviceId,deviceName,deviceType,wifiType,isOnline}
+    resp = json.dumps({"retCode": "00000", "data": {"deviceInfos": [
+        {"baseInfo": {"deviceId": "ACB722AABBCC", "deviceName": "Downstairs",
+                      "deviceType": "0201203a", "wifiType": "200861UPLUS", "isOnline": True}},
+        {"baseInfo": {"deviceId": "ACB722DDEEFF", "deviceName": "Upstairs",
+                      "deviceType": "0201203a", "wifiType": "200861UPLUS", "isOnline": False}},
+    ]}})
+    cap = Capture(Response(200, resp))
+    cloud = HaierCloud(AppCredentials("a", "k", "CID"), "TOKEN", transport=cap)
+
+    devices = await cloud.list_devices_v2()
+
+    assert cap.request.method == "GET"
+    assert cap.request.url == "https://uhome-sgp.haieriot.net/uplussea/devices/v2/user/devices"
+    assert [d.device_id for d in devices] == ["ACB722AABBCC", "ACB722DDEEFF"]
+    assert devices[0].name == "Downstairs" and devices[0].online is True
+    assert devices[0].device_type == "0201203a" and devices[0].uplus_id == "200861UPLUS"
+    assert devices[1].online is False
+
+
+def test_strip_signed_config() -> None:
+    from haismart_extractor.cloud import strip_signed_config
+    body = '{"attributes":[{"name":"onOffStatus"}]}'
+    assert strip_signed_config("a" * 64 + body) == {"attributes": [{"name": "onOffStatus"}]}  # signed
+    assert strip_signed_config(body) == {"attributes": [{"name": "onOffStatus"}]}              # bare
+
+
+async def test_get_device_config_fetches_and_strips() -> None:
+    body = json.dumps({"attributes": [{"name": "operationMode", "writable": True}]})
+    cap = Capture(Response(200, "a" * 64 + body))  # 64-hex-char signature prefix + JSON
+    cloud = HaierCloud(AppCredentials("a", "k", "c"), "T", transport=cap)
+    cfg = await cloud.get_device_config("HSU-24VRRA03TF", "2008610", version="2.0.1")
+    assert cap.request is not None and cap.request.method == "GET"
+    assert cap.request.url.endswith("constraintfile/HSU-24VRRA03TF@2008610@2.0.1")
+    assert cfg["attributes"][0]["name"] == "operationMode"
+
+
+async def test_list_user_devices_uses_confirmed_path() -> None:
+    cap = Capture(Response(200, json.dumps({"retCode": "00000", "data": []})))
+    cloud = HaierCloud(AppCredentials("MB-UZHSH", "k", "c"), "T", transport=cap)
+    await cloud.list_user_devices()
+    assert cap.request is not None
+    assert cap.request.url == f"https://uhome-sgp.haieriot.net{DEVICE_LIST_PATH}"
+    assert cap.request.body == "{}"
+    assert cap.request.headers["accessToken"] == "T"
+
+
+async def test_get_device_model_posts_deviceid_and_signs() -> None:
+    cap = Capture(Response(200, json.dumps({"retCode": "00000", "data": {}})))
+    cloud = HaierCloud(AppCredentials("MB-UZHSH", "secret", "c"), "T", transport=cap)
+    await cloud.get_device_model("DEV9")
+    req = cap.request
+    assert req is not None
+    assert req.url == f"https://uhome-sgp.haieriot.net{DEVICE_MODEL_PATH}"
+    assert req.body == '{"deviceId":"DEV9"}'
+    assert req.headers["sign"] == device_center_sign(
+        "MB-UZHSH", "secret", req.headers["timestamp"], req.body, DEVICE_MODEL_PATH
+    )
+
+
+# The refresh contract is covered by `test_refresh_token_pipeline_and_parse` above:
+# uhome host, device-center-signed, body = {refreshToken}.
+
+
+# --- email/password login ----
+# The real SE-Asia H5 login: hybrid AES+RSA. A 16-digit key encrypts the password (AES-128-CBC, key==iv),
+# and the key is RSA-wrapped into `sesame`. Endpoint uhome-sea.haieriot.net/uplussea/accounts/v2/login.
+
+
+def test_encrypt_login_password_hybrid_scheme() -> None:
+    import base64
+
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from cryptography.hazmat.primitives.padding import PKCS7
+
+    key = "1234567890123456"  # 16 digits; pinned for determinism
+    pw_field, sesame = encrypt_login_password("password123", key=key)
+    # password = AES-128-CBC/PKCS7 with key == iv == the 16 digit bytes
+    kb = key.encode()
+    ct = base64.b64decode(pw_field)
+    dec = Cipher(algorithms.AES(kb), modes.CBC(kb)).decryptor()
+    unp = PKCS7(128).unpadder()
+    assert unp.update(dec.update(ct) + dec.finalize()) + unp.finalize() == b"password123"
+    # sesame = RSA-1024 ciphertext of the key -> 128 bytes, base64
+    assert len(base64.b64decode(sesame)) == 128
+    # random key each call (non-deterministic) when key is not pinned
+    assert encrypt_login_password("x")[0] != encrypt_login_password("x")[0]
+
+
+async def test_login_request_shape_and_parse() -> None:
+    creds = AppCredentials(app_id="MB-SHEYJDNYB-0001", app_key="appkey", client_id="ignored")
+    # real SEA response shape: tokens under data.tokenInfo
+    resp = {
+        "retCode": "00000",
+        "data": {"tokenInfo": {
+            "accountToken": "2_uhomeAccess", "uhomeAccessToken": "2_uhomeAccess",
+            "refreshToken": "2_refreshDurable", "uhomeUserId": "100000000000000001",
+            "expiresIn": "863849", "zoneInfo": "66",
+        }},
+    }
+    cap = Capture(Response(200, json.dumps(resp)))
+    client, result = await HaierCloud.login(
+        creds, "me@example.com", "hunter2", client_id="ABC123", zone_info="66", transport=cap
+    )
+    req = cap.request
+    assert req is not None
+    assert req.url == "https://uhome-sea.haieriot.net" + LOGIN_PATH  # the SEA login host
+    body = json.loads(req.body)
+    assert body["username"] == "me@example.com"     # username field carries the email
+    assert "hunter2" not in req.body                # password is encrypted
+    assert len(__import__("base64").b64decode(body["sesame"])) == 128  # RSA-wrapped key
+    assert req.headers["zoneInfo"] == "66"          # the country/region zone that routes account lookup
+    ts = req.headers["timestamp"]
+    assert req.headers["sign"] == device_center_sign(
+        "MB-SHEYJDNYB-0001", "appkey", ts, req.body, LOGIN_PATH
+    )
+    assert req.headers["clientId"] == "ABC123"      # we chose the terminal the token is bound to
+    assert isinstance(result, LoginResult)
+    assert result.access_token == "2_uhomeAccess"
+    assert result.refresh_token == "2_refreshDurable"
+    assert result.uhome_user_id == "100000000000000001"
+    assert client.access_token == "2_uhomeAccess"
+
+
+async def test_login_generates_uppercase_clientid_when_unset() -> None:
+    resp = {"data": {"tokenInfo": {"uhomeAccessToken": "2_x", "refreshToken": "2_y"}}}
+    cap = Capture(Response(200, json.dumps(resp)))
+    _client, result = await HaierCloud.login(
+        AppCredentials("a", "k", "c"), "u@e.com", "pw", transport=cap
+    )
+    assert len(result.client_id) == 32 and result.client_id == result.client_id.upper()
+    assert all(ch in "0123456789ABCDEF" for ch in result.client_id)
+
+
+async def test_login_bad_retcode_raises() -> None:
+    cap = Capture(Response(200, json.dumps({"retCode": "30032", "retInfo": "Account is not registered"})))
+    with pytest.raises(CloudError, match="30032"):
+        await HaierCloud.login(AppCredentials("a", "k", "c"), "u@e.com", "pw", transport=cap)
+
+
+async def test_login_no_tokens_raises() -> None:
+    cap = Capture(Response(200, json.dumps({"retCode": "00000", "data": {"tokenInfo": {}}})))
+    with pytest.raises(CloudError, match="no tokens"):
+        await HaierCloud.login(AppCredentials("a", "k", "c"), "u@e.com", "pw", transport=cap)
+
+
+async def test_login_custom_login_host() -> None:
+    resp = {"data": {"tokenInfo": {"uhomeAccessToken": "2_A", "refreshToken": "2_R"}}}
+    cap = Capture(Response(200, json.dumps(resp)))
+    await HaierCloud.login(
+        AppCredentials("a", "k", "c"), "u@e.com", "pw",
+        domains=Domains(login="uhome-sea-yanshou.haieriot.net"), transport=cap,
+    )
+    assert cap.request is not None
+    assert cap.request.url.startswith("https://uhome-sea-yanshou.haieriot.net/")

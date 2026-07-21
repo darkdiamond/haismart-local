@@ -1,0 +1,17 @@
+# Tooling config for the Home Assistant custom integration.
+# This is not a distributable Python package (HA loads custom_components/haismart directly);
+# the pyproject exists for pytest/ruff configuration only.
+
+[tool.pytest.ini_options]
+# The sibling libraries must be importable; HA custom-component discovery uses the package CWD.
+# haismart-extractor.cloud is used by the config flow's optional cloud-credential validation.
+pythonpath = ["../haismart-hrdp/src", "../haismart-extractor/src", "."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local secrets — NEVER commit
+*.local.json
+haismart_keys_backup.json
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store

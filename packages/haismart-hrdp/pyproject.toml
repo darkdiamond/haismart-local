@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "haismart-hrdp"
+version = "0.1.0"
+description = "Standalone async client for Haier's local HRDP protocol (Haismart / U+ SE-Asia ACs)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "cryptography>=41",
+]
+
+[project.optional-dependencies]
+flatbuffers = ["flatbuffers>=24.3.25"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff", "mypy"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/haismart_hrdp"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+# 110, not 88/100: this library documents binary wire layouts inline — aligned byte-offset
+# tables and RE provenance (function addresses, hex) read worse wrapped than slightly long.
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+# ASYNC109: the I/O helpers deliberately take a `timeout` parameter (applied via asyncio.wait_for
+# internally). That's the intended public API, not a place for an `asyncio.timeout()` block.
+ignore = ["ASYNC109"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true

@@ -1,0 +1,521 @@
+"""Config flow tests. Requires homeassistant + pytest-homeassistant-custom-component."""
+from __future__ import annotations
+
+from ipaddress import ip_address
+
+import pytest
+from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import FlowResultType
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from custom_components.haismart.const import (
+    CONF_DEVICE_ID,
+    CONF_HOST,
+    CONF_LOCAL_KEY,
+    CONF_LOCALKEY_VERSION,
+    CONF_PRODUCT_CODE,
+    CONF_SCAN_INTERVAL,
+    DOMAIN,
+)
+
+try:  # HA >= 2025.2
+    from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
+except ImportError:
+    from homeassistant.components.zeroconf import ZeroconfServiceInfo
+
+LOCAL_KEY = "00112233445566778899aabbccddeeff"
+
+USER_INPUT = {
+    CONF_HOST: "192.168.1.50",
+    CONF_DEVICE_ID: "A1B2C3D4E5F6",
+    CONF_LOCAL_KEY: LOCAL_KEY,
+    "name": "Downstairs AC",
+}
+
+
+async def _start_manual(hass: HomeAssistant) -> str:
+    """Init the flow and pick the 'manual' menu option; return the manual form's flow_id."""
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    assert result["type"] == FlowResultType.MENU
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "manual"}
+    )
+    assert result["type"] == FlowResultType.FORM
+    return result["flow_id"]
+
+
+def _entry(**overrides) -> MockConfigEntry:
+    data = {
+        CONF_HOST: "192.168.1.50",
+        CONF_DEVICE_ID: "A1B2C3D4E5F6",
+        CONF_LOCAL_KEY: LOCAL_KEY,
+        CONF_PRODUCT_CODE: "AAC1UKZ01",
+        CONF_LOCALKEY_VERSION: 4,
+        **overrides,
+    }
+    return MockConfigEntry(
+        domain=DOMAIN, data=data, unique_id=data[CONF_DEVICE_ID], title="Downstairs AC"
+    )
+
+
+async def test_user_flow_creates_entry(hass: HomeAssistant, mock_uss) -> None:
+    flow_id = await _start_manual(hass)
+    result2 = await hass.config_entries.flow.async_configure(flow_id, USER_INPUT)
+    await hass.async_block_till_done()
+
+    assert result2["type"] == FlowResultType.CREATE_ENTRY
+    assert result2["title"] == "Downstairs AC"
+    assert result2["data"][CONF_DEVICE_ID] == "A1B2C3D4E5F6"
+    assert result2["data"][CONF_LOCAL_KEY] == LOCAL_KEY
+    # the AC's current localKey version is stored for rotation detection
+    assert result2["data"][CONF_LOCALKEY_VERSION] == 4
+    assert result2["data"][CONF_PRODUCT_CODE] == "AAC1UKZ01"
+
+
+@pytest.mark.parametrize("bad_key", ["not-hex-not-hex-not-hex-not-hex-!", "abcd12"])
+async def test_user_flow_invalid_key(hass: HomeAssistant, mock_uss, bad_key: str) -> None:
+    flow_id = await _start_manual(hass)
+    result2 = await hass.config_entries.flow.async_configure(
+        flow_id, {**USER_INPUT, CONF_LOCAL_KEY: bad_key}
+    )
+    assert result2["type"] == FlowResultType.FORM
+    assert result2["errors"] == {"base": "invalid_key"}
+
+
+async def test_user_flow_cannot_connect(hass: HomeAssistant, mock_uss) -> None:
+    mock_uss.probe.side_effect = OSError("no route to host")
+    flow_id = await _start_manual(hass)
+    result2 = await hass.config_entries.flow.async_configure(flow_id, USER_INPUT)
+    assert result2["type"] == FlowResultType.FORM
+    assert result2["errors"] == {"base": "cannot_connect"}
+
+
+async def test_user_flow_wrong_key_is_invalid_auth(hass: HomeAssistant, mock_uss) -> None:
+    """Handshake ok but nothing decrypts (MD5 fail on every payload) -> invalid_auth."""
+    mock_uss.read.return_value = []
+    flow_id = await _start_manual(hass)
+    result2 = await hass.config_entries.flow.async_configure(flow_id, USER_INPUT)
+    assert result2["type"] == FlowResultType.FORM
+    assert result2["errors"] == {"base": "invalid_auth"}
+
+
+async def test_user_flow_duplicate_aborts(hass: HomeAssistant, mock_uss) -> None:
+    _entry().add_to_hass(hass)
+    flow_id = await _start_manual(hass)
+    result2 = await hass.config_entries.flow.async_configure(flow_id, USER_INPUT)
+    assert result2["type"] == FlowResultType.ABORT
+    assert result2["reason"] == "already_configured"
+
+
+def _zeroconf_info(host: str = "192.168.1.50") -> ZeroconfServiceInfo:
+    return ZeroconfServiceInfo(
+        ip_address=ip_address(host),
+        ip_addresses=[ip_address(host)],
+        hostname="A1B2C3D4E5F6.local.",
+        name="A1B2C3D4E5F6._cae._udp.local.",
+        port=56800,
+        type="_cae._udp.local.",
+        properties={},
+    )
+
+
+async def test_zeroconf_flow_prefills_and_creates(hass: HomeAssistant, mock_uss) -> None:
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "zeroconf"}, data=_zeroconf_info()
+    )
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "manual"  # zeroconf skips the menu, prefilled
+
+    result2 = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            CONF_HOST: "192.168.1.50",
+            CONF_DEVICE_ID: "A1B2C3D4E5F6",
+            CONF_LOCAL_KEY: LOCAL_KEY,
+        },
+    )
+    await hass.async_block_till_done()
+    assert result2["type"] == FlowResultType.CREATE_ENTRY
+    assert result2["data"][CONF_HOST] == "192.168.1.50"
+    assert result2["data"][CONF_DEVICE_ID] == "A1B2C3D4E5F6"
+
+
+async def test_zeroconf_updates_host_of_configured_entry(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """A DHCP move re-announces on mDNS -> the stored host follows, flow aborts."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "zeroconf"}, data=_zeroconf_info("192.168.1.99")
+    )
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+    assert entry.data[CONF_HOST] == "192.168.1.99"
+
+
+async def test_dhcp_flow_prefills_host_and_device(hass: HomeAssistant, mock_uss) -> None:
+    """DHCP discovery (deviceId = MAC, OUI AC:B7:22) prefills host + deviceId; user adds the key."""
+    dhcp_mod = pytest.importorskip("homeassistant.components.dhcp")  # needs aiodhcpwatcher
+    info = dhcp_mod.DhcpServiceInfo(
+        ip="192.168.1.50", hostname="haier-ac", macaddress="acb722aabbcc"
+    )
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "dhcp"}, data=info
+    )
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "manual"   # host + deviceId prefilled from the MAC
+    result2 = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_HOST: "192.168.1.50", CONF_DEVICE_ID: "ACB722AABBCC", CONF_LOCAL_KEY: LOCAL_KEY},
+    )
+    await hass.async_block_till_done()
+    assert result2["type"] == FlowResultType.CREATE_ENTRY
+    assert result2["data"][CONF_HOST] == "192.168.1.50"
+    assert result2["data"][CONF_DEVICE_ID] == "ACB722AABBCC"
+
+
+async def test_resolve_host_by_mac_via_arp(hass: HomeAssistant) -> None:
+    """Login resolves a picked AC's IP by matching its deviceId(=MAC) in HA's ARP/DHCP data."""
+    pytest.importorskip("aiodiscover")
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from custom_components.haismart.config_flow import _async_resolve_host_arp
+
+    hosts = [
+        {"ip": "192.168.1.9", "macaddress": "11:22:33:44:55:66"},
+        {"ip": "192.168.1.50", "macaddress": "ac:b7:22:aa:bb:cc"},   # our AC (deviceId = MAC)
+    ]
+
+    def _fake_discover(return_value):
+        # patch the class so no real DiscoverHosts() is constructed (it spawns a thread)
+        inst = MagicMock()
+        inst.async_discover = AsyncMock(return_value=return_value)
+        return MagicMock(return_value=inst)
+
+    with patch("aiodiscover.DiscoverHosts", _fake_discover(hosts)):
+        assert await _async_resolve_host_arp("ACB722AABBCC") == "192.168.1.50"
+    with patch("aiodiscover.DiscoverHosts", _fake_discover([])):
+        assert await _async_resolve_host_arp("ACB722AABBCC") is None
+
+
+async def test_reauth_flow_updates_key_and_version(hass: HomeAssistant, mock_uss) -> None:
+    entry = _entry()
+    entry.add_to_hass(hass)
+    mock_uss.probe.return_value = 5  # the AC rotated to v5
+
+    entry.async_start_reauth(hass)
+    await hass.async_block_till_done()
+    flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+    assert len(flows) == 1
+
+    new_key = "ffeeddccbbaa99887766554433221100"
+    result = await hass.config_entries.flow.async_configure(
+        flows[0]["flow_id"], {CONF_LOCAL_KEY: new_key}
+    )
+    await hass.async_block_till_done()
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "reauth_successful"
+    assert entry.data[CONF_LOCAL_KEY] == new_key
+    assert entry.data[CONF_LOCALKEY_VERSION] == 5
+
+
+async def test_options_flow_sets_scan_interval(hass: HomeAssistant, mock_uss) -> None:
+    entry = _entry()
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] == FlowResultType.FORM
+    result2 = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_SCAN_INTERVAL: 60}
+    )
+    await hass.async_block_till_done()
+    assert result2["type"] == FlowResultType.CREATE_ENTRY
+    assert entry.options[CONF_SCAN_INTERVAL] == 60
+
+
+async def test_manual_flow_is_local_only(hass: HomeAssistant, mock_uss) -> None:
+    """The manual path is purely local — no cloud credentials are stored on the entry."""
+    from custom_components.haismart.const import CONF_REFRESH_TOKEN
+
+    flow_id = await _start_manual(hass)
+    result2 = await hass.config_entries.flow.async_configure(flow_id, USER_INPUT)
+    await hass.async_block_till_done()
+    assert result2["type"] == FlowResultType.CREATE_ENTRY
+    assert CONF_REFRESH_TOKEN not in result2["data"]
+    assert result2["data"][CONF_LOCAL_KEY] == LOCAL_KEY
+
+
+def _cloud_consts():
+    from custom_components.haismart.const import (
+        CONF_ACCESS_TOKEN,
+        CONF_CLOUD_CLIENT_ID,
+        CONF_LOCALKEY_VERSION,
+        CONF_REFRESH_TOKEN,
+        CONF_ZONE_INFO,
+    )
+
+    return (CONF_ACCESS_TOKEN, CONF_CLOUD_CLIENT_ID, CONF_LOCALKEY_VERSION,
+            CONF_REFRESH_TOKEN, CONF_ZONE_INFO)
+
+
+async def _drive_login_to_pick(hass, mock_uss, extra_patches):
+    """Menu -> email/password login -> device picker; pick Downstairs. Returns the post-pick result.
+
+    ``extra_patches`` (list of context managers) stubs the hands-off fetch/resolve so the tests make
+    no network calls."""
+    from contextlib import ExitStack
+    from unittest.mock import patch
+
+    from haismart_extractor.cloud import SEA_APP_CREDENTIALS, CloudDevice, HaierCloud
+    from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+
+    CONF_ACCESS_TOKEN, CONF_CLOUD_CLIENT_ID, _, CONF_REFRESH_TOKEN, CONF_ZONE_INFO = _cloud_consts()
+    cloud_data = {
+        CONF_REFRESH_TOKEN: "2_RT", CONF_ACCESS_TOKEN: "2_FRESH",
+        CONF_CLOUD_CLIENT_ID: "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4", CONF_ZONE_INFO: "66",
+    }
+    client = HaierCloud(SEA_APP_CREDENTIALS, "2_FRESH")
+    devices = [
+        CloudDevice("A1B2C3D4E5F6", "Downstairs", "0201203a", "UPLUS", True),
+        CloudDevice("A1B2C3D4E5F7", "Upstairs", "0201203a", "UPLUS", False),
+    ]
+
+    async def fake_login(username, password, zone_info):
+        return client, cloud_data
+
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "login"}
+    )
+    with ExitStack() as stack:
+        stack.enter_context(patch(
+            "custom_components.haismart.config_flow._async_login_cloud", side_effect=fake_login))
+        stack.enter_context(patch(
+            "custom_components.haismart.config_flow.HaierCloud.list_devices_v2",
+            return_value=devices))
+        stack.enter_context(patch(
+            "custom_components.haismart.config_flow.HaierCloud.get_digital_model",
+            return_value={"attributes": []}))
+        for p in extra_patches:
+            stack.enter_context(p)
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_USERNAME: "me@example.com", CONF_PASSWORD: "pw", CONF_ZONE_INFO: "66"},
+        )
+        assert result["step_id"] == "pick_device"
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_DEVICE_ID: "A1B2C3D4E5F6"}
+        )
+        await hass.async_block_till_done()
+    return result
+
+
+async def test_login_flow_autofetches_key_asks_only_host(hass: HomeAssistant, mock_uss) -> None:
+    """Key auto-fetched, but mDNS couldn't find the IP -> ask for ONLY the host, then create."""
+    from unittest.mock import AsyncMock, patch
+
+    result = await _drive_login_to_pick(hass, mock_uss, [
+        patch("custom_components.haismart.config_flow._async_fetch_localkey",
+              new=AsyncMock(return_value=(LOCAL_KEY, 13))),
+        patch("custom_components.haismart.config_flow._async_resolve_host",
+              new=AsyncMock(return_value=None)),   # mDNS miss
+    ])
+    assert result["step_id"] == "host"
+    assert set(result["data_schema"].schema) == {CONF_HOST}     # ONLY the IP, no key field
+    result2 = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_HOST: "192.168.1.50"}
+    )
+    await hass.async_block_till_done()
+    assert result2["type"] == FlowResultType.CREATE_ENTRY
+    assert result2["data"][CONF_LOCAL_KEY] == LOCAL_KEY         # never pasted
+
+
+async def test_login_flow_falls_back_to_manual_if_gateway_fails(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """If the cloud gateway can't return the key, fall back to the manual key form (graceful)."""
+    from unittest.mock import AsyncMock, patch
+
+    from haismart_extractor import GatewayError
+
+    result = await _drive_login_to_pick(hass, mock_uss, [
+        patch("custom_components.haismart.config_flow._async_fetch_localkey",
+              new=AsyncMock(side_effect=GatewayError("CONNACK rc=5"))),
+        patch("custom_components.haismart.config_flow._async_resolve_host",
+              new=AsyncMock(return_value=None)),
+    ])
+    assert result["step_id"] == "manual"                        # asks for the key by hand
+    result2 = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_HOST: "192.168.1.50", CONF_DEVICE_ID: "A1B2C3D4E5F6", CONF_LOCAL_KEY: LOCAL_KEY},
+    )
+    await hass.async_block_till_done()
+    assert result2["type"] == FlowResultType.CREATE_ENTRY
+    assert result2["data"][CONF_LOCAL_KEY] == LOCAL_KEY
+
+
+async def test_login_flow_email_password_hands_off(hass: HomeAssistant, mock_uss) -> None:
+    """Menu -> email/password -> picker -> key+IP auto-resolved -> entry (nothing pasted)."""
+    from unittest.mock import AsyncMock, patch
+
+    from haismart_extractor.cloud import SEA_APP_CREDENTIALS, CloudDevice, HaierCloud
+    from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+
+    (CONF_ACCESS_TOKEN, CONF_CLOUD_CLIENT_ID, _,
+     CONF_REFRESH_TOKEN, CONF_ZONE_INFO) = _cloud_consts()
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "login"}
+    )
+    assert result["step_id"] == "login"
+
+    client = HaierCloud(SEA_APP_CREDENTIALS, "2_UHOME")
+    cloud_data = {
+        CONF_REFRESH_TOKEN: "2_RT", CONF_ACCESS_TOKEN: "2_UHOME",
+        CONF_CLOUD_CLIENT_ID: "ABCDEF0123456789ABCDEF0123456789", CONF_ZONE_INFO: "0",
+    }
+    devices = [CloudDevice("A1B2C3D4E5F6", "Downstairs", "0201203a", "UPLUS", True)]
+
+    async def fake_login(username, password, zone_info):
+        assert username == "me@example.com" and password == "hunter2" and zone_info == "66"
+        return client, cloud_data
+
+    with patch(
+        "custom_components.haismart.config_flow._async_login_cloud", side_effect=fake_login
+    ), patch(
+        "custom_components.haismart.config_flow.HaierCloud.list_devices_v2", return_value=devices
+    ), patch(
+        "custom_components.haismart.config_flow.HaierCloud.get_digital_model",
+        return_value={"attributes": []},
+    ), patch(
+        "custom_components.haismart.config_flow._async_fetch_localkey",
+        new=AsyncMock(return_value=(LOCAL_KEY, 13)),
+    ), patch(
+        "custom_components.haismart.config_flow._async_resolve_host",
+        new=AsyncMock(return_value="192.168.1.50"),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_USERNAME: "me@example.com", CONF_PASSWORD: "hunter2"}
+        )
+        assert result["step_id"] == "pick_device"
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_DEVICE_ID: "A1B2C3D4E5F6"}
+        )
+        await hass.async_block_till_done()
+    assert result["type"] == FlowResultType.CREATE_ENTRY          # hands-off, no paste
+    assert result["data"][CONF_REFRESH_TOKEN] == "2_RT"          # durable token, from login
+    assert result["data"][CONF_LOCAL_KEY] == LOCAL_KEY           # fetched, not pasted
+    assert result["data"][CONF_CLOUD_CLIENT_ID] == "ABCDEF0123456789ABCDEF0123456789"
+
+
+async def test_login_flow_auth_error_shows_form(hass: HomeAssistant, mock_uss) -> None:
+    """A bad password (or captcha-gated login) re-shows the login form with an error."""
+    from unittest.mock import patch
+
+    from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+
+    from custom_components.haismart.config_flow import CloudAuthError
+
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "login"}
+    )
+    with patch(
+        "custom_components.haismart.config_flow._async_login_cloud",
+        side_effect=CloudAuthError("retCode B00002-00002: bad password"),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_USERNAME: "x@y.com", CONF_PASSWORD: "wrong"}
+        )
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "login"
+    assert result["errors"]["base"] == "cloud_auth"
+
+
+def _picker_device_ids(result) -> set[str]:
+    """The device IDs offered by a pick_device form (reads the vol.In choices)."""
+    for key, val in result["data_schema"].schema.items():
+        if str(key) == CONF_DEVICE_ID:
+            return set(val.container)
+    return set()
+
+
+async def test_multiple_devices_added_one_at_a_time(hass: HomeAssistant, mock_uss) -> None:
+    """Two ACs on the account: add Downstairs, then the picker offers only Upstairs, then it's
+    'all configured'. Each AC is its own entry (one per device)."""
+    from contextlib import ExitStack
+    from unittest.mock import AsyncMock, patch
+
+    from haismart_extractor.cloud import SEA_APP_CREDENTIALS, CloudDevice, HaierCloud
+    from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+
+    (CONF_ACCESS_TOKEN, CONF_CLOUD_CLIENT_ID, _,
+     CONF_REFRESH_TOKEN, CONF_ZONE_INFO) = _cloud_consts()
+    cloud_data = {
+        CONF_REFRESH_TOKEN: "2_RT", CONF_ACCESS_TOKEN: "2_FRESH",
+        CONF_CLOUD_CLIENT_ID: "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4", CONF_ZONE_INFO: "66",
+    }
+    client = HaierCloud(SEA_APP_CREDENTIALS, "2_FRESH")
+    devices = [
+        CloudDevice("A1B2C3D4E5F6", "Downstairs", "0201203a", "UPLUS", True),
+        CloudDevice("A1B2C3D4E5F7", "Upstairs", "0201203a", "UPLUS", False),
+    ]
+
+    def _patches():
+        return [
+            patch("custom_components.haismart.config_flow._async_login_cloud",
+                  new=AsyncMock(return_value=(client, cloud_data))),
+            patch("custom_components.haismart.config_flow.HaierCloud.list_devices_v2",
+                  return_value=devices),
+            patch("custom_components.haismart.config_flow.HaierCloud.get_digital_model",
+                  return_value={"attributes": []}),
+            patch("custom_components.haismart.config_flow._async_fetch_localkey",
+                  new=AsyncMock(return_value=(LOCAL_KEY, 13))),
+            patch("custom_components.haismart.config_flow._async_resolve_host",
+                  new=AsyncMock(return_value="192.168.1.50")),
+        ]
+
+    async def _to_picker():
+        r = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+        r = await hass.config_entries.flow.async_configure(r["flow_id"], {"next_step_id": "login"})
+        return await hass.config_entries.flow.async_configure(
+            r["flow_id"],
+            {CONF_USERNAME: "me@example.com", CONF_PASSWORD: "pw", CONF_ZONE_INFO: "66"},
+        )
+
+    # 1) add Downstairs — both ACs offered
+    with ExitStack() as stack:
+        for p in _patches():
+            stack.enter_context(p)
+        r = await _to_picker()
+        assert _picker_device_ids(r) == {"A1B2C3D4E5F6", "A1B2C3D4E5F7"}
+        r = await hass.config_entries.flow.async_configure(
+            r["flow_id"], {CONF_DEVICE_ID: "A1B2C3D4E5F6"}
+        )
+        await hass.async_block_till_done()
+        assert r["type"] == FlowResultType.CREATE_ENTRY
+
+    # 2) second run — picker now offers ONLY the un-added Upstairs
+    with ExitStack() as stack:
+        for p in _patches():
+            stack.enter_context(p)
+        r = await _to_picker()
+        assert _picker_device_ids(r) == {"A1B2C3D4E5F7"}
+        r = await hass.config_entries.flow.async_configure(
+            r["flow_id"], {CONF_DEVICE_ID: "A1B2C3D4E5F7"}
+        )
+        await hass.async_block_till_done()
+        assert r["type"] == FlowResultType.CREATE_ENTRY
+
+    assert len(hass.config_entries.async_entries(DOMAIN)) == 2   # two AC entries
+
+    # 3) both added -> the flow stops cleanly instead of re-offering them
+    with ExitStack() as stack:
+        for p in _patches():
+            stack.enter_context(p)
+        r = await _to_picker()
+        assert r["type"] == FlowResultType.ABORT
+        assert r["reason"] == "all_configured"

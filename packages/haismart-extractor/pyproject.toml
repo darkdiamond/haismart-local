@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "haismart-extractor"
+version = "0.1.0"
+description = "Cloud client for the Haismart (Haier SE-Asia) platform: account login, token refresh, per-device localKey fetch."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+cloud = ["httpx>=0.27"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff", "mypy"]
+
+[project.scripts]
+haismart-record = "haismart_extractor.recorder:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/haismart_extractor"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

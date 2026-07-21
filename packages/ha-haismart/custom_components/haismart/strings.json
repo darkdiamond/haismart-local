@@ -1,0 +1,99 @@
+{
+  "config": {
+    "flow_title": "Haier AC {device_id}",
+    "step": {
+      "user": {
+        "title": "Add a Haier AC",
+        "description": "Sign in with your Haismart email/password, or enter the device details manually. Google/Facebook accounts: create a throwaway email/password Haier account, share your AC(s) to it in the app, then sign in with that account.",
+        "menu_options": {
+          "login": "Sign in with email or password",
+          "manual": "Enter device details manually"
+        }
+      },
+      "login": {
+        "title": "Sign in",
+        "description": "Enter your Haismart email (or phone) + password and your region code (phone country code, e.g. 66 Thailand, 65 Singapore). Google/Facebook accounts have no password — create a throwaway email/password account, share your AC(s) to it in the app, then sign in with that account here.",
+        "data": {
+          "username": "Email or phone",
+          "password": "Password",
+          "zone_info": "Region code (e.g. 66)"
+        }
+      },
+      "pick_device": {
+        "title": "Choose a device",
+        "data": {
+          "device_id": "Device"
+        },
+        "description": "Choose which AC to add. Its key is fetched from the cloud and its IP found on your network automatically — you won't need to paste anything."
+      },
+      "manual": {
+        "title": "Device details",
+        "description": "Enter the AC's LAN IP, its device ID (the module's MAC), and its localKey. Device ID is prefilled if the AC was discovered.",
+        "data": {
+          "host": "IP address",
+          "device_id": "Device ID",
+          "local_key": "Local key (32-char hex)",
+          "name": "Name",
+          "product_code": "Product code (typeId)"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Local key rotated",
+        "description": "The AC {device_id} reports a newer localKey version — the cached key no longer decrypts its status. Enter the AC's current localKey to reconnect.",
+        "data": {
+          "local_key": "Local key (32-char hex)"
+        }
+      },
+      "host": {
+        "title": "Enter the AC's IP address",
+        "description": "Signed in and the key was fetched automatically — Home Assistant just couldn't find {device} on the network by itself. Enter its local IP address (e.g. 192.168.1.50). Tip: a DHCP reservation keeps it stable.",
+        "data": {
+          "host": "IP address"
+        }
+      }
+    },
+    "error": {
+      "invalid_key": "The local key must be a 32-character hex string.",
+      "invalid_auth": "The AC answered, but this local key does not decrypt its status (wrong or rotated key).",
+      "cannot_connect": "Could not complete the uSS handshake with the device on the LAN.",
+      "cloud_auth": "Sign-in failed — check your email/phone, password, and region code.",
+      "no_devices": "No devices were found on this account.",
+      "unknown": "Unexpected error."
+    },
+    "abort": {
+      "already_configured": "This device is already configured.",
+      "reauth_successful": "The local key was updated.",
+      "all_configured": "All of this account's ACs are already added to Home Assistant.",
+      "unknown": "Unexpected error — the device announcement wasn't understood."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Haismart options",
+        "data": {
+          "scan_interval": "Status poll interval (seconds)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "indoor_temperature": {
+        "name": "Indoor temperature"
+      },
+      "outdoor_temperature": {
+        "name": "Outdoor temperature"
+      },
+      "local_key": {
+        "name": "Local key"
+      }
+    }
+  },
+  "issues": {
+    "stale_localkey_manual_reauth": {
+      "title": "{name}: localKey rotated — manual re-key needed",
+      "description": "The AC rotated its localKey (v{old} → v{new}) and this device has no cloud credentials to refresh it automatically, so Home Assistant asked you to re-enter a key. To avoid this in future, reconfigure the device with your Haismart account (email/password) so the key auto-refreshes from the cloud on every rotation."
+    }
+  }
+}
