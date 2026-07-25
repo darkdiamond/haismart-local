@@ -66,5 +66,10 @@ AC_DEVICE_CLASSES: dict[str, str] = {
 # the user must reauth by hand. Advises adding account creds so rotation auto-refreshes in future.
 ISSUE_STALE_LOCALKEY = "stale_localkey_manual_reauth"
 
+# Repairs: the AC's status report is a length we have no confirmed layout for. Reads fall back
+# to the layout-independent fields, so the thermostat still works, but temperatures are absent
+# and control is refused rather than risking a sensor byte being written back as a control word.
+ISSUE_UNKNOWN_LAYOUT = "unknown_report_layout"
+
 # mDNS service the AC's wifi module announces (instance name = deviceId, e.g. A1B2C3D4E5F6).
 ZEROCONF_TYPE = "_cae._udp.local."

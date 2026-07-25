@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
 from conftest import make_status_frame
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
 from homeassistant.core import HomeAssistant
@@ -671,3 +672,61 @@ async def test_diagnostics_redacts_cloud_credentials(hass: HomeAssistant, mock_u
     for key, value in secrets.items():
         assert diag["entry"][key] == "**REDACTED**", f"{key} was not redacted"
         assert value not in dumped, f"{value!r} leaked elsewhere in the diagnostics"
+
+
+async def test_unknown_report_layout_degrades_and_reports(hass: HomeAssistant, mock_uss) -> None:
+    """An unrecognised report length must work partially, say so, and refuse to write.
+
+    Before, it decoded to nothing and surfaced as "no decodable status" - indistinguishable from a
+    stale key - while diagnostics reported a null blob, i.e. the one artefact needed to fix it was
+    discarded. Now: the layout-independent fields still drive the thermostat, a repair explains the
+    situation, and control is refused rather than guessing where the control words end.
+    """
+    from homeassistant.exceptions import HomeAssistantError
+    from homeassistant.helpers import issue_registry as ir
+
+    from custom_components.haismart.const import ISSUE_UNKNOWN_LAYOUT
+
+    # a real 125-byte report with one byte appended -> an odd span, so not derivable
+    mock_uss.read.return_value = [mock_uss.frame + b"\x00"]
+    await _setup(hass)
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    coordinator = entry.runtime_data
+
+    state = coordinator.data
+    assert state["partial"] is True and state["layout"] == "unknown"
+    # the thermostat still works ...
+    assert "power" in state and "target_temperature" in state and "operation_mode" in state
+    # ... and nothing whose offset depends on the word count was invented
+    assert "current_temperature" not in state
+    assert "outdoor_temperature" not in state
+
+    # the blob is RETAINED, which is what a maintainer needs
+    assert coordinator.last_raw_status == mock_uss.frame + b"\x00"
+    assert coordinator.unknown_layout == len(mock_uss.frame) + 1
+
+    issues = ir.async_get(hass)
+    assert issues.async_get_issue(DOMAIN, f"{ISSUE_UNKNOWN_LAYOUT}_{coordinator.device_id}")
+
+    # writing is refused, with a reason rather than a stack trace
+    with pytest.raises(HomeAssistantError, match="no confirmed layout"):
+        await coordinator.async_send_control({"onOffStatus": 1})
+
+
+async def test_diagnostics_carry_what_a_new_model_report_needs(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """Diagnostics must be sufficient to add a layout without a second round-trip."""
+    from custom_components.haismart.diagnostics import (
+        async_get_config_entry_diagnostics,
+    )
+
+    entry = await _setup(hass)
+    diag = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert diag["report"]["length"] == len(mock_uss.frame)
+    assert diag["report"]["unknown_layout"] is None
+    assert 125 in diag["report"]["known_lengths"] and 127 in diag["report"]["known_lengths"]
+    assert diag["report"]["layout"]["resolved"] is True
+    assert diag["report"]["layout"]["verified"] is True
+    assert diag["last_raw_status"] == mock_uss.frame.hex()

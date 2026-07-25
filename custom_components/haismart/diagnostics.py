@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from haismart_hrdp import STATUS_LAYOUTS, derive_status_layout
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
 
@@ -47,6 +48,14 @@ async def async_get_config_entry_diagnostics(
         "last_raw_status": (
             coordinator.last_raw_status.hex() if coordinator.last_raw_status else None
         ),
+        # Everything a maintainer needs to add a layout, without a second round-trip.
+        "report": {
+            "length": len(coordinator.last_raw_status or b"") or None,
+            "unknown_layout": coordinator.unknown_layout,
+            "known_lengths": sorted(STATUS_LAYOUTS),
+            "layout": _layout_summary(coordinator),
+        },
+        "digital_model": _model_summary(coordinator.digital_model),
         "profile": {
             "product_code": coordinator.product_code,
             "modes": dict(profile.mode_values),
@@ -56,3 +65,42 @@ async def async_get_config_entry_diagnostics(
             "temp_step": profile.temp_step,
         },
     }
+
+
+def _layout_summary(coordinator) -> dict[str, Any] | None:
+    """Which layout was used for the stored blob, and whether it was confirmed or derived."""
+    blob = coordinator.last_raw_status
+    if not blob:
+        return None
+    layout = derive_status_layout(blob, coordinator.digital_model)
+    if layout is None:
+        return {"resolved": False}
+    return {
+        "resolved": True,
+        "verified": layout.verified,      # False == derived from the length, not a confirmed entry
+        "words": layout.words,
+        "indoor_temp_offset": layout.indoor_temp,
+        "outdoor_temp_offset": layout.outdoor_temp,
+    }
+
+
+def _model_summary(model: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The parts of the digital model that describe CAPABILITIES.
+
+    The full model is large and contains device-identifying ids, so only the attribute value ranges
+    and the grSetDAC attribute order are included -- which is all that is needed to work out a
+    layout, and carries no credential.
+    """
+    if not model:
+        return None
+    attributes = {
+        a.get("name"): (a.get("valueRange") or {})
+        for a in model.get("attributes", [])
+        if a.get("name")
+    }
+    group_commands = {
+        g.get("name"): g.get("attrNameList")
+        for g in model.get("groupCommands", [])
+        if g.get("name")
+    }
+    return {"attributes": attributes, "groupCommands": group_commands}

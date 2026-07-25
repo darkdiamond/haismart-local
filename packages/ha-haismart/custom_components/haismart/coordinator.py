@@ -31,6 +31,7 @@ from haismart_extractor import (
 )
 from haismart_extractor.cloud import SEA_APP_CREDENTIALS, CloudError
 from haismart_hrdp import (
+    STATUS_LAYOUTS,
     AttributeProfile,
     async_read_status,
     async_send_op,
@@ -67,6 +68,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     ISSUE_STALE_LOCALKEY,
+    ISSUE_UNKNOWN_LAYOUT,
     READ_TIMEOUT,
     WRITE_TIMEOUT,
 )
@@ -158,6 +160,8 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.localkey_version: int | None = entry.data.get(CONF_LOCALKEY_VERSION)
         self.last_raw_status: bytes | None = None
         self._misses = 0
+        # length of a status report we could only partially decode, or None. Drives the repair.
+        self.unknown_layout: int | None = None
         super().__init__(
             hass,
             _LOGGER,
@@ -180,6 +184,13 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if state := parse_full_status(blob, self.profile, self.digital_model):
                 self._misses = 0
                 self.last_raw_status = blob
+                if state.get("partial"):
+                    # Decoded, but only the layout-independent fields: this model's report
+                    # length has no confirmed layout. Keeping the blob matters -- it is exactly
+                    # what a maintainer needs, and diagnostics used to report `null` for this case.
+                    self._note_unknown_layout(blob)
+                else:
+                    self._clear_unknown_layout()
                 return state
 
         # Connected fine but nothing decoded — either the AC pushed no full report this
@@ -195,6 +206,42 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         raise UpdateFailed(
             f"no decodable status from {self.host} ({misses} consecutive misses)"
         )
+
+    def _note_unknown_layout(self, blob: bytes) -> None:
+        """Record an unrecognised report length: log once, raise a repair, remember the blob."""
+        if self.unknown_layout == len(blob):
+            return      # already reported; do not repeat every poll
+        self.unknown_layout = len(blob)
+        _LOGGER.warning(
+            "Unrecognised Haier status report from %s: %d bytes (known: %s). Power, setpoint, "
+            "mode, fan and vertical swing were decoded; indoor/outdoor temperature and the "
+            "secondary toggles are unavailable. product_code=%s. Please report this model so the "
+            "layout can be added - see docs/new-model.md.",
+            self.host, len(blob), ", ".join(str(n) for n in sorted(STATUS_LAYOUTS)),
+            self.product_code,
+        )
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            f"{ISSUE_UNKNOWN_LAYOUT}_{self.device_id}",
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_UNKNOWN_LAYOUT,
+            translation_placeholders={
+                "name": self.config_entry.title,
+                "length": str(len(blob)),
+                "product_code": self.product_code or "unknown",
+            },
+            learn_more_url=(
+                "https://github.com/darkdiamond/haismart-local/blob/main/docs/new-model.md"
+            ),
+        )
+
+    def _clear_unknown_layout(self) -> None:
+        if self.unknown_layout is None:
+            return
+        self.unknown_layout = None
+        ir.async_delete_issue(self.hass, DOMAIN, f"{ISSUE_UNKNOWN_LAYOUT}_{self.device_id}")
 
     async def async_send_control(self, changes: dict[str, int]) -> None:
         """Apply ``{field_name: raw_epp_value}`` to the state and send it as one grSetDAC op.
@@ -214,6 +261,15 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # fields mapping 1:1 to a model attribute are checked; device-specific ones (swing/eco) stay
         # gated by the encoder allowlist alone.
         self._validate_against_model(changes)
+
+        if self.unknown_layout is not None:
+            # Reads degrade gracefully on an unrecognised report; writes must not. The size of the
+            # control-word block is exactly what could not be determined, so a group-set built from
+            # it could send a read-only sensor byte back to the AC as a setting.
+            raise HomeAssistantError(
+                f"control is disabled for this air conditioner: its {self.unknown_layout}-byte "
+                "status report has no confirmed layout yet, so a command could not be built safely"
+            )
 
         def _build(baseline: bytes | None) -> bytes:
             base = baseline if baseline is not None else self.last_raw_status
