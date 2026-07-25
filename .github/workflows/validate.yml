@@ -30,6 +30,7 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
-          # `brands` stays ignored until the `haismart` domain is accepted into
-          # home-assistant/brands, which a fork cannot do on its own.
-          ignore: brands
+          # No `ignore:` here on purpose. hacs/default requires the action to pass with no disabled
+          # checks, and the `brands` check is satisfied by the icons this repo ships in
+          # custom_components/haismart/brand/ -- since HA 2026.3 the brands repository auto-closes
+          # custom-integration PRs, so shipping them inline is the only supported route.
