@@ -1,6 +1,6 @@
 """ISO country -> international dialling code, for the account-region field.
 
-Haier's account API wants a bare dialling code (``972``, ``66``) as its ``zoneInfo``, and fails in
+Haier's account API wants a bare dialling code (``66``, ``351``) as its ``zoneInfo``, and fails
 the least helpful way possible: an account that exists but was registered under a different region
 comes back as ``retCode 30032``, *"Account is not registered"*. There is no endpoint that
 enumerates regions, so a curated list plus free text is the best that can be done — but a list turns
@@ -122,7 +122,7 @@ COUNTRY_DIAL_CODES: dict[str, tuple[str, str]] = {
 
 
 def country_options() -> list[dict[str, str]]:
-    """Selector options: ``{"value": "972", "label": "Israel (+972)"}``, sorted by country name.
+    """Selector options: ``{"value": "66", "label": "Thailand (+66)"}``, sorted by country name.
 
     Several countries legitimately share a code, so the value is not unique across options — that is
     fine for a selector, and picking either "Russia (+7)" or "Kazakhstan (+7)" sends the same thing.

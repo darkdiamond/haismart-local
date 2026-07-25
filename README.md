@@ -35,9 +35,9 @@ once so the integration can fetch your unit's key — after that it talks only t
 ## Is my air conditioner supported?
 
 **The app you use is what matters, not the country you're in.** If your AC pairs with the
-**Haier / Haismart** app (also branded *Haier U+* or *uHome*), you're in the right place. Accounts
-registered well outside South-East Asia work fine — this is developed against an account registered
-in **Israel**.
+**Haier / Haismart** app (also branded *Haier U+* or *uHome*), you're in the right place. Despite
+the "SE-Asia" label the platform carries internally, accounts registered well outside that region
+work fine — this is used daily on an account registered outside South-East Asia.
 
 | Your app | Supported here? | Use instead |
 |---|---|---|
@@ -131,9 +131,9 @@ your **account** was registered in. The integration lists your air conditioners,
 one's key automatically, and finds it on your network — you won't paste anything.
 
 > The country field is the **phone dialling code of the country your Haier account was created in**
-> — not where the AC is installed. Israel is +972, Thailand +66, Singapore +65. Getting it wrong is
-> the single most common setup failure, because Haier's server reports it as "account not
-> registered".
+> — not where the AC is installed, and not necessarily where you live now. Getting it wrong is the
+> single most common setup failure, because Haier's server reports it as "account not registered",
+> which reads like a wrong password.
 
 **Manual.** Host + device ID + local key, entered directly. Completely offline — no account needed.
 Use this if you already have a key (from the *Local key* diagnostic sensor, or a backup).

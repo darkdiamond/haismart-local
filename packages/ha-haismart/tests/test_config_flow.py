@@ -536,20 +536,20 @@ async def test_login_country_defaults_from_the_ha_instance(hass: HomeAssistant, 
     """
     from custom_components.haismart.countries import default_dial_code
 
-    assert default_dial_code("IL") == "972"
-    assert default_dial_code("il") == "972"
+    assert default_dial_code("PT") == "351"
+    assert default_dial_code("pt") == "351"      # case-insensitive
     assert default_dial_code("TH") == "66"
     assert default_dial_code(None) is None
     assert default_dial_code("ZZ") is None
 
-    await hass.config.async_update(country="IL")
+    await hass.config.async_update(country="PT")
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"next_step_id": "login"}
     )
     schema = result["data_schema"].schema
     zone_key = next(k for k in schema if str(k) == CONF_ZONE_INFO)
-    assert zone_key.default() == "972", "an Israeli HA instance should pre-select +972"
+    assert zone_key.default() == "351", "the HA instance's own country should be pre-selected"
 
 
 async def test_login_wrong_region_gets_its_own_error(hass: HomeAssistant, mock_uss) -> None:
@@ -584,7 +584,7 @@ async def test_login_with_no_devices_aborts(hass: HomeAssistant, mock_uss) -> No
         )
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
-            {CONF_USERNAME: "me@example.com", CONF_PASSWORD: "pw", CONF_ZONE_INFO: "972"},
+            {CONF_USERNAME: "me@example.com", CONF_PASSWORD: "pw", CONF_ZONE_INFO: "351"},
         )
     assert result["type"] == "abort"
     assert result["reason"] == "no_devices"
