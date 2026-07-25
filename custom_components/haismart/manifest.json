@@ -2,7 +2,8 @@
   "domain": "haismart",
   "name": "Haismart (Haier local)",
   "codeowners": [
-    "@enapt"
+    "@enapt",
+    "@darkdiamond"
   ],
   "config_flow": true,
   "dhcp": [
@@ -10,12 +11,12 @@
       "macaddress": "ACB722*"
     }
   ],
-  "documentation": "https://github.com/enapt/haismart-local/tree/main/packages/ha-haismart",
+  "documentation": "https://github.com/darkdiamond/haismart-local/tree/main/packages/ha-haismart",
   "integration_type": "device",
   "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/enapt/haismart-local/issues",
+  "issue_tracker": "https://github.com/darkdiamond/haismart-local/issues",
   "requirements": [],
-  "version": "0.5.0",
+  "version": "0.6.0",
   "zeroconf": [
     "_cae._udp.local."
   ]

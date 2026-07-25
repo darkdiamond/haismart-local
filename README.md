@@ -1,5 +1,20 @@
 # haismart-local
 
+> ### Fork notes
+>
+> This is a fork of [enapt/haismart-local](https://github.com/enapt/haismart-local) with two
+> additions, both verified against real hardware:
+>
+> - **125-byte status report support** (`deviceType 0201201d`). Upstream gated on a 127-byte
+>   report, so these units failed every poll with `no decodable status`, which looks
+>   misleadingly like a stale `localKey`. Report layouts are now a table keyed by length.
+> - **Independent horizontal swing** (`windDirectionHorizontal`, grSetDAC word 4 bits 0-2),
+>   exposed as HA's separate `swing_horizontal_mode` control. Previously only vertical swing
+>   was mapped.
+>
+> Upstream has pull requests disabled, so these changes live here rather than being contributed
+> back. Requires Home Assistant 2024.12 or newer.
+
 Fully-local **Home Assistant** control for Haier air conditioners that pair with the **Haismart**
 (Haier U+ / uHome, SE-Asia) app. After a one-time sign-in, reads and control run entirely on your LAN —
 no cloud at runtime.
