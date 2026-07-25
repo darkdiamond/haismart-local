@@ -10,8 +10,9 @@ from typing import Any
 
 from haismart_hrdp import GRSETDAC_ENUMS
 from homeassistant.components.climate import (
+    SWING_BOTH,
+    SWING_HORIZONTAL,
     SWING_OFF,
-    SWING_ON,
     SWING_VERTICAL,
     ClimateEntity,
     ClimateEntityFeature,
@@ -54,14 +55,13 @@ class HaismartClimate(HaismartEntity, ClimateEntity):
         ClimateEntityFeature.TARGET_TEMPERATURE
         | ClimateEntityFeature.FAN_MODE
         | ClimateEntityFeature.SWING_MODE
-        | ClimateEntityFeature.SWING_HORIZONTAL_MODE
         | ClimateEntityFeature.TURN_ON
         | ClimateEntityFeature.TURN_OFF
     )
-    _attr_swing_modes = [SWING_OFF, SWING_VERTICAL]
-    # The two axes are independent fields on this unit (vertical = word1 low nibble, horizontal =
-    # word4 bits 0-2), so horizontal gets its own control rather than being folded into swing_modes.
-    _attr_swing_horizontal_modes = [SWING_OFF, SWING_ON]
+    # The two axes are independent fields on the wire (vertical = word1 low nibble, horizontal =
+    # word4 bits 0-2), but they are presented as ONE control with the conventional four-way choice,
+    # matching how other AC integrations expose swing.
+    _attr_swing_modes = [SWING_OFF, SWING_VERTICAL, SWING_HORIZONTAL, SWING_BOTH]
     _enable_turn_on_off_backwards_compatibility = False
 
     def __init__(self, coordinator: HaismartCoordinator) -> None:
@@ -112,17 +112,17 @@ class HaismartClimate(HaismartEntity, ClimateEntity):
 
     @property
     def swing_mode(self) -> str | None:
-        swing = self._state.get("swing_vertical")
-        if swing is None:
+        vertical = self._state.get("swing_vertical")
+        horizontal = self._state.get("swing_horizontal")
+        if vertical is None and horizontal is None:
             return None
-        return SWING_VERTICAL if swing else SWING_OFF
-
-    @property
-    def swing_horizontal_mode(self) -> str | None:
-        swing = self._state.get("swing_horizontal")
-        if swing is None:
-            return None
-        return SWING_ON if swing else SWING_OFF
+        if vertical and horizontal:
+            return SWING_BOTH
+        if vertical:
+            return SWING_VERTICAL
+        if horizontal:
+            return SWING_HORIZONTAL
+        return SWING_OFF
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         if hvac_mode == HVACMode.OFF:
@@ -161,22 +161,16 @@ class HaismartClimate(HaismartEntity, ClimateEntity):
         await self.coordinator.async_send_control({"windSpeed": fan_val})
 
     async def async_set_swing_mode(self, swing_mode: str) -> None:
-        on = swing_mode == SWING_VERTICAL
+        # Both axes travel in ONE grSetDAC group-set, so off -> both can never land as a
+        # half-applied state, and picking one axis explicitly turns the other off.
+        vertical = swing_mode in (SWING_VERTICAL, SWING_BOTH)
+        horizontal = swing_mode in (SWING_HORIZONTAL, SWING_BOTH)
+        v_enum = GRSETDAC_ENUMS["windDirectionVertical"]
+        h_enum = GRSETDAC_ENUMS["windDirectionHorizontal"]
         await self.coordinator.async_send_control(
             {
-                "windDirectionVertical": GRSETDAC_ENUMS["windDirectionVertical"][
-                    "on" if on else "off"
-                ]
-            }
-        )
-
-    async def async_set_swing_horizontal_mode(self, swing_horizontal_mode: str) -> None:
-        on = swing_horizontal_mode == SWING_ON
-        await self.coordinator.async_send_control(
-            {
-                "windDirectionHorizontal": GRSETDAC_ENUMS["windDirectionHorizontal"][
-                    "on" if on else "off"
-                ]
+                "windDirectionVertical": v_enum["on" if vertical else "off"],
+                "windDirectionHorizontal": h_enum["on" if horizontal else "off"],
             }
         )
 
