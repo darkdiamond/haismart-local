@@ -21,7 +21,7 @@ write path. No cloud at runtime.
     fails. (Same "cloud fetches the key" model as LocalTuya's cloud-assisted onboarding.)
   - *Manual*: host + device ID + `localKey` directly — the fully-offline path (no account).
   - Every path validates by a **live uSS read** (handshake proves reachability, biz-data MD5 proves the key
-    decrypts). **Discovery is by DHCP**: the deviceId **is** the AC's MAC (OUI `AC:B7:22`), so a `dhcp`
+    decrypts). **Discovery is by DHCP**: the deviceId **is** the AC's MAC, so a `dhcp`
     manifest matcher + `async_step_dhcp` surface each AC as a discovered device (host + device ID prefilled).
     (These units do **not** announce `_cae._udp` mDNS — so zeroconf discovery is
     kept only as a dormant future-proof.) The AC's `localKey` **version** is stored so the coordinator detects

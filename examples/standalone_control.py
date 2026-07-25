@@ -6,13 +6,13 @@ drive an AC from any Python program — a CLI, a cron job, a Node-RED ``exec`` n
 
 You need three things per AC (the same trio as the integration's "Manual" onboarding):
   * ``--host``       the AC's LAN IP
-  * ``--device-id``  the Wi-Fi module's MAC, no separators (e.g. ``ACB722AABBCC``)
+  * ``--device-id``  the Wi-Fi module's MAC, no separators (e.g. ``A1B2C3D4E5F6``)
   * ``--local-key``  the per-device 32-hex key. If you don't have it, fetch it once with
                      ``haismart-extractor`` (account login -> MQTT-gateway localKey fetch); see the README.
 
 Examples::
 
-    python examples/standalone_control.py --host 192.168.1.50 --device-id ACB722AABBCC \
+    python examples/standalone_control.py --host 192.168.1.50 --device-id A1B2C3D4E5F6 \
         --local-key 00112233445566778899aabbccddeeff                 # read + print status
     python examples/standalone_control.py ... --set-temp 24          # set target temperature, then read back
 """
@@ -23,16 +23,27 @@ import asyncio
 
 import haismart_hrdp as h
 
-STATUS_LEN = 127  # the decoded status push is a fixed-width blob
+# Report length varies by model (125 and 127 are both confirmed), so recognise a status blob by
+# asking the library rather than hardcoding a width. A fixed `== 127` matched nothing at all on a
+# 125-byte unit - and then blamed the localKey for it, which is the worst kind of wrong answer.
 
 
 def read_current_status(host: str, device_id: str, local_key: str) -> bytes:
     """Handshake, decrypt the AC's status pushes, and return the newest full status blob."""
-    blobs = [b for b in h.read_status(host, device_id, local_key) if len(b) == STATUS_LEN]
+    raw = h.read_status(host, device_id, local_key)
+    blobs = [b for b in raw if h.derive_status_layout(b) is not None]
     if not blobs:
         # Handshake worked but nothing decrypted -> the localKey is wrong or stale (it rotates
         # server-side). Probe the AC's current version key-free to confirm.
         version = h.probe_localkey_version(host, device_id)
+        if raw:
+            # Payloads DID decrypt, so the key is fine - this unit's report layout is simply one we
+            # have no entry for. Blaming the key here would send you re-fetching a key that works.
+            raise SystemExit(
+                f"decrypted {len(raw)} payload(s) but none is a recognised status report "
+                f"(lengths: {sorted(len(b) for b in raw)}). The localKey is fine (v{version}); this "
+                "model's report layout is not known yet - please report it, see docs/new-model.md."
+            )
         raise SystemExit(
             f"no decodable status: the localKey did not decrypt (AC is on localKey version {version}). "
             "The key rotates server-side — re-fetch the current one."
@@ -51,16 +62,21 @@ async def set_temperature(host: str, device_id: str, local_key: str, target_c: i
         return h.grsetdac_op_frame(words)
 
     replies = await h.async_send_op(host, device_id, local_key, counter=1, build_frame=build)
-    confirmed = [b for b in replies if len(b) == STATUS_LEN]
+    confirmed = [b for b in replies if h.derive_status_layout(b) is not None]
     return confirmed[-1] if confirmed else read_current_status(host, device_id, local_key)
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Read/control a Haismart Haier AC without Home Assistant.")
     p.add_argument("--host", required=True, help="AC LAN IP")
-    p.add_argument("--device-id", required=True, help="Wi-Fi MAC, no separators (e.g. ACB722AABBCC)")
+    p.add_argument("--device-id", required=True, help="Wi-Fi MAC, no separators (e.g. A1B2C3D4E5F6)")
     p.add_argument("--local-key", required=True, help="per-device 32-hex localKey")
-    p.add_argument("--type-id", default="AAC1UKZ01", help="product code for the status profile")
+    p.add_argument(
+        "--type-id",
+        default=None,
+        help="optional product code (e.g. AACRL2E00) selecting a per-model profile; the default "
+        "uses the Haier-wide standard enum codes, which decode on any model",
+    )
     p.add_argument("--set-temp", type=int, metavar="C", help="set target temperature (Celsius), then read back")
     args = p.parse_args()
 

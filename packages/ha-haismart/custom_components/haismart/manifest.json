@@ -8,7 +8,79 @@
   "config_flow": true,
   "dhcp": [
     {
+      "macaddress": "0007A8*"
+    },
+    {
+      "macaddress": "00258D*"
+    },
+    {
+      "macaddress": "0439CB*"
+    },
+    {
+      "macaddress": "04C9DE*"
+    },
+    {
+      "macaddress": "04E229*"
+    },
+    {
+      "macaddress": "04FA83*"
+    },
+    {
+      "macaddress": "145790*"
+    },
+    {
+      "macaddress": "18A7F1*"
+    },
+    {
+      "macaddress": "24E8CE*"
+    },
+    {
+      "macaddress": "2C37C5*"
+    },
+    {
+      "macaddress": "3412DC*"
+    },
+    {
+      "macaddress": "3429EF*"
+    },
+    {
+      "macaddress": "3C1640*"
+    },
+    {
+      "macaddress": "4448FF*"
+    },
+    {
+      "macaddress": "540853*"
+    },
+    {
+      "macaddress": "5C241F*"
+    },
+    {
+      "macaddress": "60B02B*"
+    },
+    {
+      "macaddress": "68E478*"
+    },
+    {
+      "macaddress": "94224C*"
+    },
+    {
+      "macaddress": "A08222*"
+    },
+    {
+      "macaddress": "AC8226*"
+    },
+    {
       "macaddress": "ACB722*"
+    },
+    {
+      "macaddress": "D8E23F*"
+    },
+    {
+      "macaddress": "DC330E*"
+    },
+    {
+      "macaddress": "E8EAFA*"
     }
   ],
   "documentation": "https://github.com/darkdiamond/haismart-local/tree/main/packages/ha-haismart",
@@ -19,7 +91,7 @@
     "haismart-hrdp==0.1.0",
     "haismart-extractor"
   ],
-  "version": "0.10.0",
+  "version": "0.10.1",
   "zeroconf": [
     "_cae._udp.local."
   ]

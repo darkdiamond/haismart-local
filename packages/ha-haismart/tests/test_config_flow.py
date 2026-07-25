@@ -714,3 +714,42 @@ async def test_reconfigure_changes_the_host_only_after_validating(
     await hass.async_block_till_done()
     assert good["type"] == FlowResultType.ABORT
     assert entry.data[CONF_HOST] == "192.168.1.77"
+
+
+def test_dhcp_discovery_covers_haier_appliance_ouis_only() -> None:
+    """The DHCP matcher must cover Haier's appliance OUIs, and only those.
+
+    This started as a single prefix, which meant most Haier units were never auto-discovered. It is
+    asserted here because nothing did: an earlier attempt to widen it was silently lost when the
+    script applying it aborted, and no test noticed the manifest had reverted.
+    """
+    import json
+    from pathlib import Path
+
+    manifest = json.loads(
+        (Path(__file__).resolve().parents[1] / "custom_components" / "haismart" / "manifest.json")
+        .read_text(encoding="utf-8")
+    )
+    prefixes = {entry["macaddress"].rstrip("*") for entry in manifest["dhcp"]}
+
+    # confirmed in service on working air conditioners
+    for oui in ("ACB722", "24E8CE", "0007A8"):
+        assert oui in prefixes, f"{oui} is a known-working appliance OUI"
+
+    # NOT appliances: phones, TVs and a silicon design house. A false positive here would offer a
+    # config flow for someone's Haier phone.
+    for oui, what in (
+        ("C8D779", "Haier Telecom - phones"),
+        ("B0A37E", "Haier Telecom - phones"),
+        ("DC330D", "Haier Telecom - phones (adjacent to DC330E, which IS appliances)"),
+        ("D058C0", "Haier Multimedia - TVs"),
+        ("BC2B6B", "Beijing Haier IC Design"),
+    ):
+        assert oui not in prefixes, f"{oui} ({what}) must not be matched"
+
+    # MA-M assignments: their 24-bit prefixes are shared with unrelated companies, and Home
+    # Assistant matches on prefixes, so they cannot be expressed safely.
+    for oui in ("1845B3", "1054D2"):
+        assert oui not in prefixes, f"{oui} is an MA-M block with a shared 24-bit prefix"
+
+    assert all(len(p) == 6 and p.isalnum() for p in prefixes), prefixes

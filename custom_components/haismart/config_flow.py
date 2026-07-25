@@ -15,7 +15,7 @@ account, **share your AC(s) to it** in the app, and log in with that account (sh
 same local access as ownership).
 
 Discovery: these units do **NOT** announce `_cae._udp` mDNS, so HA finds them by **DHCP** (deviceId
-IS the MAC, OUI `AC:B7:22`): a `dhcp` matcher + `async_step_dhcp` surface each AC (host + deviceId
+IS the MAC): a `dhcp` matcher over Haier's appliance OUIs + `async_step_dhcp` surface each AC
 prefilled), and the login flow resolves a picked AC's IP from HA's ARP/DHCP data (`aiodiscover`).
 The zeroconf step is kept for future firmware. The **manual** menu path is the fully-offline option.
 """
@@ -568,7 +568,7 @@ class HaismartConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_dhcp(
         self, discovery_info: DhcpServiceInfo
     ) -> ConfigFlowResult:
-        """DHCP-discovered on the LAN (deviceId **is** the MAC, OUI ``AC:B7:22``): the sanctioned
+        """DHCP-discovered on the LAN (the deviceId **is** the module's MAC): the sanctioned
         to find units that don't announce mDNS. Prefills host + deviceId (the manual step then
         just needs the key; or use the login menu path for the key too)."""
         device_id = format_mac(discovery_info.macaddress).replace(":", "").upper()

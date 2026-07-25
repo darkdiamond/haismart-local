@@ -67,8 +67,9 @@ Then **restart Home Assistant.**
 **Settings → Devices & Services → Add Integration → "Haismart (Haier local)"** (it may also appear on its own
 via zeroconf, since it listens for `_cae._udp`). Pick one path:
 
-- **Login (recommended) — no key to paste:** email/phone + password + **region code** (the phone country
-  code — e.g. `66` Thailand, `65` Singapore). It then **lists your ACs to pick from**, and for the one you
+- **Login (recommended) — no key to paste:** email/phone + password + the **country your Haier
+  account was registered in**, picked from a list (it is the phone dialling code underneath, and it
+  defaults to your Home Assistant instance's own country). It then **lists your ACs to pick from**, and for the one you
   choose it **fetches the localKey from the cloud automatically** — you never paste a key — and **finds the
   AC's IP via DHCP** (the deviceId is the AC's MAC). You only enter the IP if HA hasn't seen the AC on the
   network yet (then find it in your router's client list).
@@ -81,7 +82,8 @@ The flow validates by doing a live read, then creates the entities.
 
 **Multiple ACs (e.g. Upstairs + Downstairs):** each AC is its own HA device, added one at a time. After you
 add the first, run **Add Integration → Haismart** again — the picker now shows only the AC(s) you haven't
-added yet (and says so once they're all in). Each AC is also **DHCP-discovered** (its MAC starts `AC:B7:22`),
+added yet (and says so once they're all in). Each AC is also **DHCP-discovered** (Haier's Wi-Fi
+modules use a number of MAC prefixes; the integration matches all the appliance ones it knows),
 so both will appear as "Discovered" cards you can add directly.
 
 ## 3. Verify
@@ -121,7 +123,8 @@ Belt-and-suspenders, also block the gateway **IP** at the firewall — some unit
 ```
 
 ### Option B — per-device WAN block (bulletproof)
-On the router, deny **internet (WAN)** for each AC by its **MAC** (`AC:B7:22:xx:xx:xx`) or reserved IP, while
+On the router, deny **internet (WAN)** for each AC by its **MAC** (whatever the unit's own Wi-Fi
+module reports — check your router's client list) or reserved IP, while
 allowing **LAN**. This catches hardcoded IPs and any baked-in DNS automatically — zero doubt — at the cost of
 a per-device rule. This is the reliable choice if you want a guarantee.
 
@@ -160,14 +163,22 @@ as the guaranteed floor, flash **ESPHome** onto the module.
 - **HA log: "Requirements for haismart not found" / import errors.** The two libs landed in a different Python
   than HA's. Re-run `install-dev.sh` with `--python` pointing at HA's interpreter (Core/venv: the venv's
   `bin/python`; Docker: run inside the container).
-- **"No decodable status" / entities unavailable right after adding.** Usually a **stale `localKey`** — it
+- **"No decodable status" / entities unavailable right after adding.** Two different causes, and
+  recent versions tell them apart for you. If the climate entity works but the temperatures are
+  missing and a repair notification has appeared, the AC's **report layout is not one we know yet**
+  — the key is fine; please report the model (see [`docs/new-model.md`](docs/new-model.md)).
+  Otherwise it is a **stale `localKey`** — it
   rotates server-side. The login/cloud paths auto-refetch it; the manual path will prompt a reauth (and raise
   a repair suggesting you add account creds so it self-heals next time).
 - **Can't reach the AC.** Confirm HA and the AC are on the same subnet and `:56800` is open:
-  `nc -z <ac-ip> 56800`. The integration finds the AC by **DHCP** (its MAC starts `AC:B7:22`) or the host you
+  `nc -z <ac-ip> 56800`. The integration finds the AC by **DHCP** (matching Haier's appliance MAC
+  prefixes) or the host you
   provide; if you blocked the AC's WAN (§4), make sure you left its **LAN** open.
-- **Login rejected (retCode 30032).** Wrong region code or credentials — the region routes the account lookup
-  (e.g. `66` for a Thailand account). `10001` = a missing field.
+- **Login rejected.** The integration now names the likely cause rather than listing all three
+  fields. "No Haier account … in the country you selected" (retCode 30032) means the **country** is
+  almost certainly wrong: it is the one the account was *registered* in, which need not be where you
+  live or where the AC is. A missing-field error is retCode 10001. If sign-in succeeds but no devices
+  appear, the account has none bound — share the AC to it in the app first.
 
 ## Uninstall
 
