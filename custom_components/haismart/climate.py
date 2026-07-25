@@ -11,6 +11,7 @@ from typing import Any
 from haismart_hrdp import GRSETDAC_ENUMS
 from homeassistant.components.climate import (
     SWING_OFF,
+    SWING_ON,
     SWING_VERTICAL,
     ClimateEntity,
     ClimateEntityFeature,
@@ -53,10 +54,14 @@ class HaismartClimate(HaismartEntity, ClimateEntity):
         ClimateEntityFeature.TARGET_TEMPERATURE
         | ClimateEntityFeature.FAN_MODE
         | ClimateEntityFeature.SWING_MODE
+        | ClimateEntityFeature.SWING_HORIZONTAL_MODE
         | ClimateEntityFeature.TURN_ON
         | ClimateEntityFeature.TURN_OFF
     )
     _attr_swing_modes = [SWING_OFF, SWING_VERTICAL]
+    # The two axes are independent fields on this unit (vertical = word1 low nibble, horizontal =
+    # word4 bits 0-2), so horizontal gets its own control rather than being folded into swing_modes.
+    _attr_swing_horizontal_modes = [SWING_OFF, SWING_ON]
     _enable_turn_on_off_backwards_compatibility = False
 
     def __init__(self, coordinator: HaismartCoordinator) -> None:
@@ -112,6 +117,13 @@ class HaismartClimate(HaismartEntity, ClimateEntity):
             return None
         return SWING_VERTICAL if swing else SWING_OFF
 
+    @property
+    def swing_horizontal_mode(self) -> str | None:
+        swing = self._state.get("swing_horizontal")
+        if swing is None:
+            return None
+        return SWING_ON if swing else SWING_OFF
+
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         if hvac_mode == HVACMode.OFF:
             await self.coordinator.async_send_control({"onOffStatus": 0})
@@ -153,6 +165,16 @@ class HaismartClimate(HaismartEntity, ClimateEntity):
         await self.coordinator.async_send_control(
             {
                 "windDirectionVertical": GRSETDAC_ENUMS["windDirectionVertical"][
+                    "on" if on else "off"
+                ]
+            }
+        )
+
+    async def async_set_swing_horizontal_mode(self, swing_horizontal_mode: str) -> None:
+        on = swing_horizontal_mode == SWING_ON
+        await self.coordinator.async_send_control(
+            {
+                "windDirectionHorizontal": GRSETDAC_ENUMS["windDirectionHorizontal"][
                     "on" if on else "off"
                 ]
             }

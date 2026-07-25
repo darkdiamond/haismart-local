@@ -117,7 +117,8 @@ def test_parse_full_status_confirmed_fields():
     #   swing on (byte[93]=0x08)
     # secondary toggles read back from the same grSetDAC word block: both units have only the display
     # light on (lamp=True); health/strong/quiet/sleep off and eco=0 (computed from the real blobs)
-    _toggles = {"health": False, "strong": False, "quiet": False, "sleep": False, "lamp": True, "eco": 0}
+    _toggles = {"health": False, "strong": False, "quiet": False, "sleep": False, "lamp": True, "eco": 0,
+                "swing_horizontal": True}  # both units report word4 bits0-2 == 7 (left-right auto)
     d = uss.parse_full_status(REAL_STATUS_DOWN, prof)
     assert d == {"power": True, "target_temperature": 24.0, "current_temperature": 30.0,
                  "operation_mode": "6", "wind_speed": "3", "swing_vertical": True,
@@ -297,7 +298,9 @@ def test_set_grsetdac_field_reproduces_real_transitions(before, name, value, aft
 
 def test_set_grsetdac_field_refuses_unmapped_fields():
     words = bytes.fromhex("0c0422000201000708000000")
-    for unmapped in ("energySavingStatus", "lightStatus", "windDirectionHorizontal", "notARealAttr"):
+    # NB windDirectionHorizontal used to be listed here; it is now a confirmed field (word4 bits
+    # 0-2), so an invalid VALUE for it raises ValueError instead — see the test below.
+    for unmapped in ("energySavingStatus", "lightStatus", "notARealAttr"):
         with pytest.raises(KeyError):
             uss.set_grsetdac_field(words, unmapped, 1)
 
@@ -488,7 +491,7 @@ def test_parse_full_status_decodes_the_125_byte_variant():
     assert d == {
         "power": False, "target_temperature": 24.0, "current_temperature": 25.0,
         "operation_mode": "1", "wind_speed": "5", "swing_vertical": True,
-        "outdoor_temperature": 32.0,
+        "swing_horizontal": True, "outdoor_temperature": 32.0,
         "health": False, "strong": False, "quiet": False, "sleep": False, "lamp": True, "eco": 0,
         "mode": "cool", "fan_mode": "auto",
     }
@@ -546,3 +549,50 @@ def test_set_grsetdac_field_round_trips_on_a_125_baseline():
     # ...and the untouched fields are preserved by the group-set
     assert uss.parse_full_status(patched)["operation_mode"] == "1"
     assert uss.parse_full_status(patched)["lamp"] is True
+
+
+# --- independent horizontal swing axis (windDirectionHorizontal) ---------------
+def test_horizontal_swing_reads_on_both_report_variants():
+    """word4 bits 0-2 carry left-right swing on both the 127- and 125-byte reports."""
+    for blob in (REAL_STATUS_DOWN, REAL_STATUS_UP, STATUS_125):
+        assert uss.read_grsetdac_field(blob, "windDirectionHorizontal") == 7
+        assert uss.parse_full_status(blob)["swing_horizontal"] is True
+        # the axis must not be confused with ecoMode, which shares word 4 (bits 3-5)
+        assert uss.read_grsetdac_field(blob, "ecoMode") == 0
+
+
+def test_horizontal_swing_is_independent_of_vertical_and_eco():
+    """Confirmed by a single-attribute app sweep: only word4 bits 0-2 move.
+
+    Ground truth captured live — toggling ONLY left-right swing in the vendor app took word4 from
+    0x0007 to 0x0000 while byte 93 (vertical) stayed 0x0c and ecoMode stayed 0.
+    """
+    base = uss.grsetdac_baseline_from_status(STATUS_125)
+    off = uss.set_grsetdac_field(base, "windDirectionHorizontal", 0x00)
+    assert (off[6] << 8) | off[7] == 0x0000
+    assert off[:6] == base[:6] and off[8:] == base[8:]      # nothing outside word 4 moved
+
+    fixed = STATUS_125[:92] + off + STATUS_125[92 + len(off):]
+    state = uss.parse_full_status(fixed)
+    assert state["swing_horizontal"] is False
+    assert state["swing_vertical"] is True                  # vertical axis untouched
+    assert state["eco"] == 0                                # eco untouched
+    assert state["target_temperature"] == 24.0
+
+    back = uss.set_grsetdac_field(off, "windDirectionHorizontal", 0x07)
+    assert back == base                                     # round-trips exactly
+
+
+def test_horizontal_swing_refuses_unobserved_values():
+    base = uss.grsetdac_baseline_from_status(STATUS_125)
+    for bad in (1, 3, 8, 12, 15):
+        with pytest.raises(ValueError, match="observed-valid"):
+            uss.set_grsetdac_field(base, "windDirectionHorizontal", bad)
+
+
+def test_horizontal_swing_enum_matches_the_digital_model_codes():
+    # the model lists exactly two codes: 0 = fixed, 7 = auto. Unlike windDirectionVertical, the raw
+    # EPP value equals the STD code, which is why the coordinator can gate it against valueRange.
+    assert uss.GRSETDAC_ENUMS["windDirectionHorizontal"] == {"off": 0x00, "on": 0x07}
+    assert uss.GRSETDAC_ALLOWED_VALUES["windDirectionHorizontal"] == {0x00, 0x07}
+    assert uss.GRSETDAC_FIELDS["windDirectionHorizontal"] == (4, 0, 3)

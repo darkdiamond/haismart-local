@@ -108,6 +108,10 @@ _MODEL_VALUE_FROM_EPP: dict[str, Callable[[int], object]] = {
     "muteStatus": _bool_code,
     "silentSleepStatus": _bool_code,
     "screenDisplayStatus": _bool_code,
+    # raw EPP value == the STD code the model lists (0 / 7), so the valueRange gate applies
+    # directly. windDirectionVertical is deliberately absent: its EPP nibble (0x0c) is NOT its
+    # STD code (8), so it cannot be validated against the model's valueRange.
+    "windDirectionHorizontal": lambda epp: epp,
 }
 
 

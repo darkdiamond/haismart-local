@@ -182,7 +182,7 @@ class GatewayCreds:
         username_body: str | None = None,
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
-    ) -> "GatewayCreds":
+    ) -> GatewayCreds:
         """Build fully-derived creds — no stored username/password needed.
 
         ``client_id = MD5(usdk_client_id + "_" + package)`` and the ``username``/``password`` pair is
@@ -374,7 +374,7 @@ class _TlsMqttConnection(MqttConnection):  # pragma: no cover - needs network
             d = self.ss.recv(8192)
             if d:
                 self._buf += d
-        except (TimeoutError, socket.timeout):
+        except TimeoutError:
             return out
         while len(self._buf) >= 2:
             mult = 1

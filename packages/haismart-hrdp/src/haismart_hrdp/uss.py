@@ -338,6 +338,11 @@ GRSETDAC_FIELDS = {
     "silentSleepStatus":   (3, 5, 1),  # app: "sleep"
     "screenDisplayStatus": (3, 9, 1),  # app: "lamp" (the unit's front light/display)
     "windDirectionVertical": (1, 0, 4),  # app: "up and down" — a TOGGLE on this unit: 0=off, 0x0c=on
+    "windDirectionHorizontal": (4, 0, 3),  # app: "left and right" — 0=fixed, 7=auto
+    # ^ confirmed by a single-attribute app sweep: toggling ONLY left-right swing moved word4 bits
+    #   0-2 between 7 and 0 and nothing else — ecoMode (same word, bits 3-5) stayed 0 and the
+    #   vertical nibble stayed put. Unlike windDirectionVertical the raw EPP value equals the STD
+    #   code the digital model lists (0 = 左右摆位置一(固定), 7 = 左右摆位置八(自动)).
     "ecoMode":               (4, 3, 3),  # app: "eco" — device-specific MULTI-LEVEL: 0=off, 5/6/7 = 3 levels
     # ^ ecoMode is NOT the digital model's energySavingStatus bool (word5 b6, which never moves here); this
     #   unit repurposes word4 b3-5 into a 3-bit eco level. Confirmed by an eco-only sweep (values 0/5/6/7).
@@ -349,6 +354,7 @@ GRSETDAC_ALLOWED_VALUES = {
     "operationMode": {0, 1, 2, 6},
     "windSpeed":     {1, 2, 3, 5},
     "windDirectionVertical": {0x00, 0x0c},   # off / on (the app's exact on-nibble)
+    "windDirectionHorizontal": {0x00, 0x07}, # fixed / auto (the model's only two codes)
     "ecoMode":               {0, 5, 6, 7},   # off / three levels (5/6/7)
 }
 
@@ -356,6 +362,7 @@ GRSETDAC_ENUMS = {  # semantic token -> raw EPP value, for the multi-value field
     "operationMode": {"auto": 0, "cool": 1, "dry": 2, "fan_only": 6},
     "windSpeed":     {"high": 1, "medium": 2, "low": 3, "auto": 5},
     "windDirectionVertical": {"off": 0x00, "on": 0x0c},
+    "windDirectionHorizontal": {"off": 0x00, "on": 0x07},
     "ecoMode":               {"off": 0, "level1": 5, "level2": 6, "level3": 7},  # level<->code order TBD
 }
 
@@ -475,8 +482,9 @@ def status_layout(data: bytes) -> StatusLayout | None:
 
 # The secondary app toggles + eco live in the SAME grSetDAC word block a control op seeds from
 # (report[92:104]), so they decode straight back through the confirmed field map — no separate offsets to
-# pin. 1-bit fields become bools; ecoMode is the multi-level value. (Vertical swing is already surfaced as
-# ``swing_vertical`` from byte[93], so windDirectionVertical is intentionally not repeated here.)
+# pin. 1-bit fields become bools; ecoMode is the multi-level value. (Both swing axes are already
+# surfaced as ``swing_vertical`` / ``swing_horizontal`` above, so windDirectionVertical and
+# windDirectionHorizontal are intentionally not repeated here.)
 _STATUS_TOGGLE_FIELDS = {
     "healthMode": "health",
     "rapidMode": "strong",
@@ -498,6 +506,7 @@ def parse_full_status(data: bytes, profile=None) -> dict:
       - ``operation_mode`` (STD code) = byte[94] >> 5   (0=auto 1=cool 2=dry 6=fan)
       - ``wind_speed``    (STD code) = byte[94] & 0x0F  (1=high 2=medium 3=low 5=auto)
       - ``swing_vertical`` (bool)    = byte[93] & 0x08  (auto up-down swing; confirmed by app toggle)
+      - ``swing_horizontal`` (bool)  = grSetDAC word4 bits 0-2 (auto left-right swing; app toggle)
       - ``outdoor_temperature``      = byte[106] - 64   (correlated across 3 states; 2 distinct points)
 
     NB the many air-quality/humidity attributes the digital model lists read 0 on this basic cooling
@@ -524,6 +533,7 @@ def parse_full_status(data: bytes, profile=None) -> dict:
         "operation_mode": mode_code,
         "wind_speed": fan_code,
         "swing_vertical": bool(data[_OFF_SWING_V] & 0x08),
+        "swing_horizontal": bool(read_grsetdac_field(data, "windDirectionHorizontal")),
         "outdoor_temperature": float(data[layout.outdoor_temp] - 64),
     }
     # the secondary toggles + eco, read back from the report's grSetDAC word block (confirmed map)
