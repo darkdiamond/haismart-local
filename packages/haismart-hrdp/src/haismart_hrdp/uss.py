@@ -416,15 +416,62 @@ def parse_status_container(data: bytes) -> StatusContainer:
     return StatusContainer(header=data[:hdr_len], attr_region=data[hdr_len:], raw=data)
 
 
-# Confirmed byte offsets in the 127-byte "full status" report (typeId AAC1UKZ01), validated on real
-# units against the uSDK's getAttributeMap + a single-variable app sweep.
-_FULL_STATUS_LEN = 127
+# Confirmed byte offsets in the "full status" report, validated on real units against the uSDK's
+# getAttributeMap + a single-variable app sweep.
+#
+# The CAE envelope (78-byte prefix + BE16 inner-frame length) and the EPP frame header are identical
+# across models, so the packed attribute vector always starts at byte 92 — immediately after the
+# ``6d 01`` getAllProperty response code. What DOES vary by model is how many grSetDAC control words
+# the report carries before the read-only sensor block, which shifts every sensor offset after it.
+# Each known report length therefore gets a :class:`StatusLayout`; an unrecognised length decodes to
+# ``{}`` rather than silently misreading a neighbouring attribute.
+_FULL_STATUS_LEN = 127   # AAC1UKZ01 report length — the historical default
+_OFF_ATTRS = 92          # first packed attribute byte; identical on every known variant
 _OFF_TARGET_TEMP = 92    # targetTemperature = byte + 16
 _OFF_SWING_V = 93        # vertical: bit3(0x08)=auto up-down swing, bits0-2=vane position
 _OFF_MODE_FAN = 94       # (operationMode << 5) | windSpeed  — both STD codes packed in one byte
 _OFF_ONOFF = 97          # onOffStatus = byte (1=on/0=off)
 _OFF_INDOOR_TEMP = 104   # indoorTemperature = byte / 2  (the /2 == the model's 0.5° step)
 _OFF_OUTDOOR_TEMP = 106  # outdoorTemperature = byte - 64  (correlated across 3 states, 2 distinct pts)
+
+
+@dataclass(frozen=True)
+class StatusLayout:
+    """The model-dependent part of a full-status report layout, keyed by report length.
+
+    ``words`` is how many grSetDAC control words (2 bytes each, from :data:`_OFF_ATTRS`) the report
+    carries — i.e. the size of the baseline a control op seeds from. The read-only sensor bytes follow
+    that block, so their offsets move with it.
+    """
+
+    words: int          # grSetDAC data words 1..N present in the report
+    indoor_temp: int    # byte offset of indoorTemperature (value = byte / 2)
+    outdoor_temp: int   # byte offset of outdoorTemperature (value = byte - 64)
+
+    @property
+    def baseline(self) -> slice:
+        """The report slice holding grSetDAC data words 1..``words``."""
+        return slice(_OFF_ATTRS, _OFF_ATTRS + 2 * self.words)
+
+
+STATUS_LAYOUTS: dict[int, StatusLayout] = {
+    # typeId AAC1UKZ01 (HSU-24VRRA03TF): 6 control words, sensor block from byte 104.
+    127: StatusLayout(words=6, indoor_temp=_OFF_INDOOR_TEMP, outdoor_temp=_OFF_OUTDOOR_TEMP),
+    # deviceType 0201201d: the report carries 2 attribute bytes fewer — 5 control words — so every
+    # sensor offset after the word block shifts by -2. Verified on a live unit: every decoded field
+    # agreed with the cloud digital-model shadow read in the same second (targetTemperature,
+    # operationMode, windSpeed, onOffStatus, indoorTemperature, screenDisplayStatus,
+    # windDirectionVertical), and a grSetDAC op built from the 5-word baseline was ACCEPTED — the AC
+    # echoed the new targetTemperature on the op's own connection and preserved every other attribute.
+    125: StatusLayout(words=5, indoor_temp=102, outdoor_temp=104),
+}
+
+
+def status_layout(data: bytes) -> StatusLayout | None:
+    """The :class:`StatusLayout` for a decrypted blob, or ``None`` if it is not a known status report."""
+    if len(data) < 4 or data[2:4] != b"\x27\x15":
+        return None
+    return STATUS_LAYOUTS.get(len(data))
 
 # The secondary app toggles + eco live in the SAME grSetDAC word block a control op seeds from
 # (report[92:104]), so they decode straight back through the confirmed field map — no separate offsets to
@@ -441,7 +488,7 @@ _STATUS_TOGGLE_FIELDS = {
 
 
 def parse_full_status(data: bytes, profile=None) -> dict:
-    """Decode the CONFIRMED fields of the AAC1UKZ01 127-byte full-status report.
+    """Decode the CONFIRMED fields of a full-status report (see :data:`STATUS_LAYOUTS`).
 
     All offsets validated on real hardware (getAttributeMap ground truth + a one-attribute-at-a-time
     app sweep):
@@ -456,21 +503,28 @@ def parse_full_status(data: bytes, profile=None) -> dict:
     NB the many air-quality/humidity attributes the digital model lists read 0 on this basic cooling
     unit — it has no such sensors — so they carry no data to decode from the report.
 
+    The offsets above are the AAC1UKZ01 (127-byte) report. Models that report fewer grSetDAC control
+    words shift the sensor offsets that follow the word block — ``indoorTemperature`` /
+    ``outdoorTemperature`` are therefore read from the blob's :class:`StatusLayout`, not from fixed
+    constants. The attribute vector itself always starts at byte 92, so the control-word fields
+    (power / target temperature / mode / fan / swing) are layout-independent.
+
     Pass an ``AttributeProfile`` (e.g. ``profile_for("AAC1UKZ01")``) to also get normalized ``mode``/
-    ``fan_mode`` tokens. Returns ``{}`` if ``data`` isn't the recognised full-status report.
+    ``fan_mode`` tokens. Returns ``{}`` if ``data`` isn't a recognised full-status report.
     """
-    if len(data) != _FULL_STATUS_LEN or data[2:4] != b"\x27\x15":
+    layout = status_layout(data)
+    if layout is None:
         return {}
     mode_code = str(data[_OFF_MODE_FAN] >> 5)
     fan_code = str(data[_OFF_MODE_FAN] & 0x0F)
     out = {
         "power": bool(data[_OFF_ONOFF]),
         "target_temperature": float(data[_OFF_TARGET_TEMP] + 16),
-        "current_temperature": data[_OFF_INDOOR_TEMP] / 2.0,
+        "current_temperature": data[layout.indoor_temp] / 2.0,
         "operation_mode": mode_code,
         "wind_speed": fan_code,
         "swing_vertical": bool(data[_OFF_SWING_V] & 0x08),
-        "outdoor_temperature": float(data[_OFF_OUTDOOR_TEMP] - 64),
+        "outdoor_temperature": float(data[layout.outdoor_temp] - 64),
     }
     # the secondary toggles + eco, read back from the report's grSetDAC word block (confirmed map)
     for field, label in _STATUS_TOGGLE_FIELDS.items():
@@ -566,15 +620,21 @@ async def async_read_status(ip: str, device_id: str, local_key: str, *,
 # equals the grSetDAC data words 1..6 (verified against 64/66 real status reports). So the
 # control flow is: read status -> take report[92:104] as the baseline -> set_grsetdac_field(...) for each
 # change -> build_epp_frame(0x01, EPP_CMD_GRSETDAC, words) -> async_send_op.
-GRSETDAC_BASELINE = slice(92, 104)  # words 1..6 within a 127-byte full-status report
+GRSETDAC_BASELINE = STATUS_LAYOUTS[_FULL_STATUS_LEN].baseline  # words 1..6 (the 127-byte report)
 
 
 def grsetdac_baseline_from_status(status_blob: bytes) -> bytes:
-    """Extract the 12 grSetDAC data-word bytes (words 1..6) from a full-status report to seed a control
-    op — so a group-set preserves every attribute except the one(s) being changed."""
-    if len(status_blob) < GRSETDAC_BASELINE.stop or status_blob[2:4] != b"\x27\x15":
+    """Extract the grSetDAC data-word bytes (words 1..N) from a full-status report to seed a control op
+    — so a group-set preserves every attribute except the one(s) being changed.
+
+    ``N`` comes from the report's :class:`StatusLayout`. Slicing a fixed 12 bytes would pull read-only
+    sensor bytes into the word block on a model that carries fewer control words, and a group-set seeded
+    that way would write a sensor reading back as if it were a control word.
+    """
+    layout = status_layout(status_blob)
+    if layout is None:
         raise ValueError("not a full-status report — cannot derive a grSetDAC baseline")
-    return status_blob[GRSETDAC_BASELINE]
+    return status_blob[layout.baseline]
 
 
 def grsetdac_op_frame(words: bytes) -> bytes:
@@ -611,10 +671,10 @@ async def _read_pushed_status(reader, leftover: bytes, local_key: str, timeout: 
                     blob = biz_decrypt(m.payload, local_key)[1]
                 except ValueError:
                     continue
-                # A full-status report (127 B). Require >= 104 so the grSetDAC baseline slice
-                # ``[92:104]`` is a complete 12-byte word block — a shorter blob (e.g. a small ack that
-                # happens to decrypt) must not seed a truncated/malformed op frame.
-                if len(blob) >= 104:
+                # A full-status report, i.e. a blob whose length maps to a known StatusLayout — so the
+                # grSetDAC baseline is a complete word block. A blob of any other size (e.g. a small ack
+                # that happens to decrypt) must not seed a truncated/malformed op frame.
+                if status_layout(blob) is not None:
                     return blob
         read_to = timeout if first else min(timeout, _COLLECT_IDLE)
         try:

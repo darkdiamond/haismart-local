@@ -442,3 +442,107 @@ async def test_send_op_build_frame_seeds_from_in_session_push(monkeypatch):
 
     await uss.async_send_op("1.2.3.4", DEV, LOCALKEY, build_frame=build, counter=1, timeout=1.0)
     assert seen["baseline"] == REAL_STATUS_DOWN   # the in-session push became the seed baseline
+
+
+# --- 125-byte report variant (deviceType 0201201d) ----------------------------
+# A real decrypted full-status report from a unit whose report carries 2 attribute bytes fewer than the
+# AAC1UKZ01 one: 5 grSetDAC control words instead of 6, so every sensor offset after the word block
+# shifts by -2. Captured live and cross-checked field-by-field against the cloud digital-model shadow
+# (targetTemperature=24, operationMode=1, windSpeed=5, onOffStatus=false, indoorTemperature=25.0,
+# screenDisplayStatus=true, windDirectionVertical=8 -> swing on). Carries no secret: the canonical
+# all-zero CAE report prefix, no deviceId embedded.
+STATUS_125 = bytes.fromhex(
+    "00002715000000004e5601000003020000040100000000000000000000000000"
+    "0000000000000000000000000000000000000000000000000000000000000000"
+    "0000000000000000000000000000002dffff2a000000000000066d01080c250f"
+    "020000070000323760100003000000000000000000000000002fe4c19f"
+)
+
+
+def test_status_layout_recognises_both_report_lengths():
+    assert len(STATUS_125) == 125
+    assert uss.status_layout(REAL_STATUS_DOWN) == uss.StatusLayout(
+        words=6, indoor_temp=104, outdoor_temp=106
+    )
+    assert uss.status_layout(STATUS_125) == uss.StatusLayout(
+        words=5, indoor_temp=102, outdoor_temp=104
+    )
+    # the 78-byte CAE envelope is identical across variants; only the inner EPP frame length differs
+    assert STATUS_125[:78] == uss.CAE_REPORT_PREFIX
+    assert int.from_bytes(STATUS_125[78:80], "big") == len(STATUS_125) - 80
+
+
+def test_status_layout_rejects_non_status_blobs():
+    assert uss.status_layout(b"") is None
+    assert uss.status_layout(bytes(126)) is None            # unknown length
+    assert uss.status_layout(bytes(4)) is None              # right length field, wrong magic
+    # a blob of a known length but the wrong container type is not a status report
+    assert uss.status_layout(b"\x00\x00\x99\x99" + bytes(121)) is None
+
+
+def test_parse_full_status_decodes_the_125_byte_variant():
+    from haismart_hrdp import profile_for
+
+    prof = profile_for("AAC1UKZ01")
+    d = uss.parse_full_status(STATUS_125, prof)
+    assert d == {
+        "power": False, "target_temperature": 24.0, "current_temperature": 25.0,
+        "operation_mode": "1", "wind_speed": "5", "swing_vertical": True,
+        "outdoor_temperature": 32.0,
+        "health": False, "strong": False, "quiet": False, "sleep": False, "lamp": True, "eco": 0,
+        "mode": "cool", "fan_mode": "auto",
+    }
+
+
+def test_parse_full_status_ignores_an_unknown_report_length():
+    # regression: an unrecognised length must decode to {} rather than misread a neighbouring byte
+    assert uss.parse_full_status(STATUS_125 + b"\x00") == {}
+    assert uss.parse_full_status(STATUS_125[:-1]) == {}
+
+
+def test_grsetdac_baseline_tracks_the_report_layout():
+    """The baseline is words 1..N for the blob's layout — never a fixed 12 bytes.
+
+    On the 125-byte variant byte 102 is the read-only indoorTemperature. A hardcoded ``[92:104]``
+    slice would pull it (and byte 103) into the word block, so a group-set would write a sensor
+    reading back to the AC as if it were control word 6.
+    """
+    assert uss.grsetdac_baseline_from_status(REAL_STATUS_DOWN) == REAL_STATUS_DOWN[92:104]
+    base = uss.grsetdac_baseline_from_status(STATUS_125)
+    assert base == STATUS_125[92:102]
+    assert len(base) == 10
+    # the invariant that matters: the word block must end at or before the first sensor byte
+    for blob in (REAL_STATUS_DOWN, STATUS_125):
+        layout = uss.status_layout(blob)
+        assert layout.baseline.stop <= layout.indoor_temp
+    assert STATUS_125[uss.status_layout(STATUS_125).indoor_temp] == 50   # 50 / 2 == 25.0 degC
+
+
+def test_grsetdac_baseline_rejects_an_unknown_length():
+    with pytest.raises(ValueError, match="not a full-status report"):
+        uss.grsetdac_baseline_from_status(STATUS_125[:-1])
+
+
+def test_read_grsetdac_field_on_the_125_variant():
+    # words 1..5 sit at the same offsets on both variants, so the confirmed field map applies as-is
+    assert uss.read_grsetdac_field(STATUS_125, "targetTemperature") == 24 - 16
+    assert uss.read_grsetdac_field(STATUS_125, "operationMode") == 1
+    assert uss.read_grsetdac_field(STATUS_125, "windSpeed") == 5
+    assert uss.read_grsetdac_field(STATUS_125, "onOffStatus") == 0
+    assert uss.read_grsetdac_field(STATUS_125, "screenDisplayStatus") == 1
+    assert uss.read_grsetdac_field(STATUS_125, "windDirectionVertical") == 0x0C
+    assert uss.read_grsetdac_field(STATUS_125, "ecoMode") == 0
+
+
+def test_set_grsetdac_field_round_trips_on_a_125_baseline():
+    base = uss.grsetdac_baseline_from_status(STATUS_125)
+    words = uss.set_grsetdac_field(base, "targetTemperature", 26 - 16)
+    assert len(words) == len(base)                     # group-set keeps the word count
+    assert words[2:] == base[2:]                       # only word 1's high byte moved
+    # re-reading through a synthetic report confirms the encode/decode agree
+    patched = STATUS_125[:92] + words + STATUS_125[92 + len(words):]
+    assert uss.read_grsetdac_field(patched, "targetTemperature") == 26 - 16
+    assert uss.parse_full_status(patched)["target_temperature"] == 26.0
+    # ...and the untouched fields are preserved by the group-set
+    assert uss.parse_full_status(patched)["operation_mode"] == "1"
+    assert uss.parse_full_status(patched)["lamp"] is True

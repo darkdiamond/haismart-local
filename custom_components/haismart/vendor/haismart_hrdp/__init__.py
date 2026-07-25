@@ -9,7 +9,7 @@ Home-Assistant-agnostic. The local protocol lives in ``uss.py``:
     state = next(h.parse_full_status(b, profile) for b in blobs if h.parse_full_status(b, profile))
 
     # control: group-set seeded from a live status blob; the encoder refuses non-confirmed field/values
-    raw = next(b for b in blobs if len(b) == 127 and b[2:4] == b"\\x27\\x15")
+    raw = next(b for b in blobs if h.status_layout(b) is not None)
     words = h.set_grsetdac_field(h.grsetdac_baseline_from_status(raw), "targetTemperature", 25 - 16)
     await h.async_send_op("192.168.1.50", "A1B2C3D4E5F6", localkey, h.grsetdac_op_frame(words), counter=1)
 """
@@ -30,9 +30,11 @@ from .uss import (
     GRSETDAC_ALLOWED_VALUES,
     GRSETDAC_ENUMS,
     GRSETDAC_FIELDS,
+    STATUS_LAYOUTS,
     HelloResp,
     Message,
     StatusContainer,
+    StatusLayout,
     async_read_status,
     async_send_op,
     biz_decrypt,
@@ -57,6 +59,7 @@ from .uss import (
     read_grsetdac_field,
     read_status,
     set_grsetdac_field,
+    status_layout,
 )
 
 __version__ = "0.1.0"
@@ -75,6 +78,9 @@ __all__ = [
     "localkey_aes_key",
     "parse_status_container",
     "parse_full_status",
+    "status_layout",
+    "StatusLayout",
+    "STATUS_LAYOUTS",
     "StatusContainer",
     "parse_hello_resp",
     "HelloResp",
