@@ -177,7 +177,7 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise UpdateFailed(f"uSS read from {self.host} failed: {err}") from err
 
         for blob in blobs:
-            if state := parse_full_status(blob, self.profile):
+            if state := parse_full_status(blob, self.profile, self.digital_model):
                 self._misses = 0
                 self.last_raw_status = blob
                 return state
@@ -185,13 +185,15 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Connected fine but nothing decoded — either the AC pushed no full report this
         # cycle (transient) or every biz payload failed the MD5 check (stale localKey).
         self._misses += 1
+        # capture BEFORE the probe below resets it, or the message always reports 0
+        misses = self._misses
         if self._misses >= _MISSES_BEFORE_PROBE:
             # probe once at the threshold; if the key still matches it's a transient miss, so
             # reset the counter rather than re-probe (an extra handshake) on every later cycle.
             await self._check_localkey_rotation()
             self._misses = 0
         raise UpdateFailed(
-            f"no decodable status from {self.host} ({self._misses} consecutive misses)"
+            f"no decodable status from {self.host} ({misses} consecutive misses)"
         )
 
     async def async_send_control(self, changes: dict[str, int]) -> None:
@@ -252,7 +254,7 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         decoded. The AC echoes updated state on the op connection (the protocol). Also updates
         the seed baseline + miss counter so the next op/poll starts from the confirmed state."""
         for blob in reversed(reply):
-            if state := parse_full_status(blob, self.profile):
+            if state := parse_full_status(blob, self.profile, self.digital_model):
                 self.last_raw_status = blob
                 self._misses = 0
                 return state

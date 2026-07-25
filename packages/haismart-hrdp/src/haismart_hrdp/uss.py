@@ -22,13 +22,17 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import random
 import socket
 import struct
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+_LOGGER = logging.getLogger(__name__)
 
 USS_PORT = 56800
 _ZERO_IV = b"\x00" * 16
@@ -85,11 +89,24 @@ def decode_message(buf: bytes) -> Message:
 
 
 def split_messages(buf: bytes):
-    """Yield complete uSS messages from a byte stream (the AC may batch several)."""
+    """Yield complete uSS messages from a byte stream (the AC may batch several).
+
+    A declared length below 0x0A cannot be a real frame (the header alone is 16 bytes, i.e. a
+    ``6 + length`` total of 16). Rather than hand ``decode_message`` a truncated slice — which raises
+    ``ValueError`` from inside a collect loop the caller does not guard, turning a corrupt packet into
+    an unhandled traceback every poll — stop and log. A desynchronised stream cannot be resynced
+    safely, and advancing by a bogus total risks looping forever on ``total == 0``.
+    """
     off = 0
     while off + 6 <= len(buf):
         length = struct.unpack(">H", buf[off + 4:off + 6])[0]
         total = 6 + length
+        if total < 16:
+            _LOGGER.warning(
+                "uSS stream desynchronised at offset %d: declared frame length %d is too short to be "
+                "a message; discarding the rest of this read", off, length,
+            )
+            return
         if off + total > len(buf):
             break
         yield buf[off:off + total]
@@ -135,6 +152,25 @@ class HelloResp:
     localkey_version: int   # the AC's CURRENT localKey version (payload[4:8])
 
 
+def check_hello_resp(msg: Message) -> HelloResp:
+    """Validate a HELLO_RESP and return it, raising if the AC refused the session.
+
+    ``status != 1`` means the AC answered but declined — the session is dead. Every call site used to
+    check only ``info_type``, so a refusal sailed through ``hello_done``, produced no status push, and
+    surfaced as the same "no decodable status" a stale key or a dead network gives. On the write path
+    it was worse: an op was sent into a session the AC had already refused.
+    """
+    if msg.info_type != INFO_HELLO_RESP:
+        raise RuntimeError(f"unexpected reply {msg.info_code:#x}")
+    resp = parse_hello_resp(msg)
+    if resp.status != 1:
+        raise RuntimeError(
+            f"AC rejected the handshake (status={resp.status}) - check the deviceId is this unit's "
+            f"Wi-Fi MAC"
+        )
+    return resp
+
+
 def parse_hello_resp(msg: Message) -> HelloResp:
     """HELLO_RESP payload is ``status(BE32) || localkey_version(BE32)`` (e.g. ``00000001 00000004``)."""
     status, ver = (struct.unpack(">II", msg.payload[:8]) if len(msg.payload) >= 8 else (0, 0))
@@ -154,9 +190,7 @@ def probe_localkey_version(ip: str, device_id: str, *, pro_ver: int = 2, timeout
         msg = _recv_message(s)
     finally:
         s.close()
-    if msg.info_type != INFO_HELLO_RESP:
-        raise RuntimeError(f"unexpected reply {msg.info_code:#x}")
-    return parse_hello_resp(msg).localkey_version
+    return check_hello_resp(msg).localkey_version
 
 
 # --- biz-data payload crypto --------------------------------------------------
@@ -351,7 +385,7 @@ GRSETDAC_FIELDS = {
 # Allowed raw EPP values per field — the encoder REFUSES anything else, so we never fire a code the app
 # was not observed to send (temperature is range-checked instead). Bools accept {0,1} implicitly.
 GRSETDAC_ALLOWED_VALUES = {
-    "operationMode": {0, 1, 2, 6},
+    "operationMode": {0, 1, 2, 4, 6},   # 4 = heat; see GRSETDAC_ENUMS
     "windSpeed":     {1, 2, 3, 5},
     "windDirectionVertical": {0x00, 0x0c},   # off / on (the app's exact on-nibble)
     "windDirectionHorizontal": {0x00, 0x07}, # fixed / auto (the model's only two codes)
@@ -359,7 +393,10 @@ GRSETDAC_ALLOWED_VALUES = {
 }
 
 GRSETDAC_ENUMS = {  # semantic token -> raw EPP value, for the multi-value fields
-    "operationMode": {"auto": 0, "cool": 1, "dry": 2, "fan_only": 6},
+    # 4 = heat. Absent until now because the only unit available upstream (AAC1UKZ01 /
+    # HSU-24VRRA03TF) is cooling-only, so a heat-capable model advertised HVACMode.HEAT via its
+    # digital model and then raised on the write because this map could not express it.
+    "operationMode": {"auto": 0, "cool": 1, "dry": 2, "heat": 4, "fan_only": 6},
     "windSpeed":     {"high": 1, "medium": 2, "low": 3, "auto": 5},
     "windDirectionVertical": {"off": 0x00, "on": 0x0c},
     "windDirectionHorizontal": {"off": 0x00, "on": 0x07},
@@ -454,11 +491,23 @@ class StatusLayout:
     words: int          # grSetDAC data words 1..N present in the report
     indoor_temp: int    # byte offset of indoorTemperature (value = byte / 2)
     outdoor_temp: int   # byte offset of outdoorTemperature (value = byte - 64)
+    verified: bool = True   # False when DERIVED from the length rather than a confirmed table entry
 
     @property
     def baseline(self) -> slice:
         """The report slice holding grSetDAC data words 1..``words``."""
         return slice(_OFF_ATTRS, _OFF_ATTRS + 2 * self.words)
+
+    @classmethod
+    def for_words(cls, words: int, *, verified: bool) -> StatusLayout:
+        """Build a layout from the control-word count alone.
+
+        Both confirmed models satisfy ``indoor = _OFF_ATTRS + 2*words`` and ``outdoor = indoor + 2``
+        (127 B -> 6 words -> 104/106; 125 B -> 5 words -> 102/104), i.e. the sensor block begins
+        immediately after the word block.
+        """
+        indoor = _OFF_ATTRS + 2 * words
+        return cls(words=words, indoor_temp=indoor, outdoor_temp=indoor + 2, verified=verified)
 
 
 STATUS_LAYOUTS: dict[int, StatusLayout] = {
@@ -474,11 +523,74 @@ STATUS_LAYOUTS: dict[int, StatusLayout] = {
 }
 
 
+# Bytes that follow the control-word block: the read-only sensor region plus the EPP checksum. This
+# is 23 on BOTH confirmed models (127 = 92 + 2*6 + 23, 125 = 92 + 2*5 + 23), which is what makes the
+# word count derivable from the report length alone.
+_SENSOR_TAIL_LEN = 23
+_LAYOUT_BASE_LEN = _OFF_ATTRS + _SENSOR_TAIL_LEN   # 115; report length = base + 2*words
+_MAX_WORDS = 12   # sanity bound: no observed grSetDAC block exceeds this
+
+# Plausibility band used to veto a DERIVED layout and to reject sentinel sensor readings. A unit that
+# lacks a sensor reports 0 for it, which would otherwise decode to a confident -64.0 C outdoor value.
+_PLAUSIBLE_TEMP_C = (-40.0, 70.0)
+
+
 def status_layout(data: bytes) -> StatusLayout | None:
-    """The :class:`StatusLayout` for a decrypted blob, or ``None`` if it is not a known status report."""
+    """The CONFIRMED :class:`StatusLayout` for a blob, or ``None`` if its length isn't in the table.
+
+    Table-only on purpose. This is the gate the **write** path uses (via
+    :func:`grsetdac_baseline_from_status`), where a wrong word count would send a sensor byte back to
+    the AC as a control word. For reads, prefer :func:`derive_status_layout`.
+    """
     if len(data) < 4 or data[2:4] != b"\x27\x15":
         return None
     return STATUS_LAYOUTS.get(len(data))
+
+
+def derive_status_layout(data: bytes, digital_model: dict | None = None) -> StatusLayout | None:
+    """A layout for reading ``data``: the confirmed table entry, else one derived from its length.
+
+    Returns ``None`` only when the blob isn't a status report at all or the derivation is not
+    credible. A derived layout carries ``verified=False`` and is deliberately **not** accepted by the
+    write path.
+
+    Derivation is the closed form implied by :data:`_SENSOR_TAIL_LEN`, vetoed by a plausibility check
+    on the byte it would call ``indoorTemperature`` — using the device's own model bounds when a
+    ``digital_model`` is supplied. The veto can only reject; it never picks between candidates.
+    """
+    if len(data) < 4 or data[2:4] != b"\x27\x15":
+        return None
+    known = STATUS_LAYOUTS.get(len(data))
+    if known is not None:
+        return known
+    span = len(data) - _LAYOUT_BASE_LEN
+    if span <= 0 or span % 2:
+        return None
+    words = span // 2
+    if not 1 <= words <= _MAX_WORDS:
+        return None
+    layout = StatusLayout.for_words(words, verified=False)
+    if layout.outdoor_temp >= len(data):
+        return None
+    lo, hi = _indoor_bounds(digital_model)
+    raw = data[layout.indoor_temp]
+    if raw in (0x00, 0xFF) or not lo <= raw / 2.0 <= hi:
+        return None
+    return layout
+
+
+def _indoor_bounds(digital_model: dict | None) -> tuple[float, float]:
+    """``indoorTemperature`` min/max from the device model, or a conservative room-temperature band."""
+    lo, hi = 1.0, 55.0
+    for attr in (digital_model or {}).get("attributes", []):
+        if attr.get("name") != "indoorTemperature":
+            continue
+        ds = ((attr.get("valueRange") or {}).get("dataStep")) or {}
+        try:
+            return max(lo, float(ds["minValue"])), min(hi, float(ds["maxValue"]))
+        except (KeyError, TypeError, ValueError):
+            break
+    return lo, hi
 
 # The secondary app toggles + eco live in the SAME grSetDAC word block a control op seeds from
 # (report[92:104]), so they decode straight back through the confirmed field map — no separate offsets to
@@ -495,7 +607,7 @@ _STATUS_TOGGLE_FIELDS = {
 }
 
 
-def parse_full_status(data: bytes, profile=None) -> dict:
+def parse_full_status(data: bytes, profile=None, digital_model: dict | None = None) -> dict:
     """Decode the CONFIRMED fields of a full-status report (see :data:`STATUS_LAYOUTS`).
 
     All offsets validated on real hardware (getAttributeMap ground truth + a one-attribute-at-a-time
@@ -521,29 +633,66 @@ def parse_full_status(data: bytes, profile=None) -> dict:
     Pass an ``AttributeProfile`` (e.g. ``profile_for("AAC1UKZ01")``) to also get normalized ``mode``/
     ``fan_mode`` tokens. Returns ``{}`` if ``data`` isn't a recognised full-status report.
     """
-    layout = status_layout(data)
-    if layout is None:
+    if len(data) < 4 or data[2:4] != b"\x27\x15":
         return {}
+    layout = derive_status_layout(data, digital_model)
+    if layout is None and len(data) <= _OFF_ONOFF:
+        return {}   # too short even for the layout-independent fields
+
+    # Fields at bytes 92..97 are grSetDAC words 1-3, which sit BEFORE anything the word count moves,
+    # so they decode identically on every layout — confirmed byte-for-byte on both known models. That
+    # is what makes a partial decode worthwhile: an unrecognised report still yields a working
+    # thermostat (power / setpoint / mode / fan / vertical swing) instead of nothing at all.
     mode_code = str(data[_OFF_MODE_FAN] >> 5)
-    fan_code = str(data[_OFF_MODE_FAN] & 0x0F)
-    out = {
+    # 3 bits, not 4: bit 3 of this byte belongs to `specialMode`, so masking 0x0F turns an odd
+    # specialMode into a phantom fan code of `speed + 8` and blanks the fan dropdown.
+    fan_code = str(data[_OFF_MODE_FAN] & 0x07)
+    out: dict = {
         "power": bool(data[_OFF_ONOFF]),
         "target_temperature": float(data[_OFF_TARGET_TEMP] + 16),
-        "current_temperature": data[layout.indoor_temp] / 2.0,
         "operation_mode": mode_code,
         "wind_speed": fan_code,
         "swing_vertical": bool(data[_OFF_SWING_V] & 0x08),
-        "swing_horizontal": bool(read_grsetdac_field(data, "windDirectionHorizontal")),
-        "outdoor_temperature": float(data[layout.outdoor_temp] - 64),
     }
-    # the secondary toggles + eco, read back from the report's grSetDAC word block (confirmed map)
-    for field, label in _STATUS_TOGGLE_FIELDS.items():
-        raw = read_grsetdac_field(data, field)
-        out[label] = bool(raw) if GRSETDAC_FIELDS[field][2] == 1 else raw
     if profile is not None:
         out["mode"] = profile.normalized_mode(mode_code)
         out["fan_mode"] = profile.normalized_fan(fan_code)
+
+    if layout is None:
+        # Unknown report length. Say so explicitly so the caller can surface it as "this model needs
+        # a layout" rather than the misleading "no decodable status", and omit every field whose
+        # offset depends on the word count rather than guessing at it.
+        out["layout"] = "unknown"
+        out["partial"] = True
+        return out
+
+    out["current_temperature"] = _sensor_temp(data[layout.indoor_temp], scale=0.5, offset=0.0)
+    out["outdoor_temperature"] = _sensor_temp(data[layout.outdoor_temp], scale=1.0, offset=-64.0)
+    words = data[layout.baseline]
+    out["swing_horizontal"] = bool(_field_from_words(words, "windDirectionHorizontal"))
+    # the secondary toggles + eco, read back from the report's grSetDAC word block (confirmed map)
+    for field, label in _STATUS_TOGGLE_FIELDS.items():
+        try:
+            raw = _field_from_words(words, field)
+        except ValueError:
+            continue    # this layout is too short to carry the field; omit rather than fabricate
+        out[label] = bool(raw) if GRSETDAC_FIELDS[field][2] == 1 else raw
     return out
+
+
+def _sensor_temp(raw: int, *, scale: float, offset: float) -> float | None:
+    """Decode a temperature byte, or ``None`` when the unit clearly has no such sensor.
+
+    A model without (say) an outdoor probe reports 0 for it, which the raw formula turns into a
+    confident -64.0 C. Published as a MEASUREMENT that lands in long-term statistics, one fabricated
+    reading permanently skews the min/max/mean of a user's history, so an absent sensor must read as
+    absent. 0x00/0xFF are the observed sentinels; the band catches the rest.
+    """
+    if raw in (0x00, 0xFF):
+        return None
+    value = raw * scale + offset
+    lo, hi = _PLAUSIBLE_TEMP_C
+    return value if lo <= value <= hi else None
 
 
 # --- live session (sync + async), READ-ONLY -----------------------------------
@@ -556,18 +705,23 @@ def read_status(ip: str, device_id: str, local_key: str, *,
     try:
         s.sendall(hello_message(device_id, sn=1, pro_ver=pro_ver))
         resp = _recv_message(s)
-        if resp.info_type != INFO_HELLO_RESP:
-            raise RuntimeError(f"unexpected reply {resp.info_code:#x}")
+        check_hello_resp(resp)
         s.sendall(hello_done_message(sn=2, session=resp.session, pro_ver=pro_ver))
         buf = b""
-        try:
-            while len(buf) < 8192:
+        deadline = time.monotonic() + timeout
+        while len(buf) < 8192 and time.monotonic() < deadline:
+            try:
                 chunk = s.recv(4096)
-                if not chunk:
-                    break
-                buf += chunk
-        except TimeoutError:
-            pass
+            except TimeoutError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+            # The AC delivers its whole status burst at once, then holds the socket open and silent,
+            # so waiting the full timeout after the burst spent ~4s of wall clock on every poll for
+            # data that arrived in ~50ms. Once bytes are in hand, allow only a short idle window.
+            # (The write path already did this; the read paths never got the same treatment.)
+            s.settimeout(min(timeout, _COLLECT_IDLE))
     finally:
         s.close()
     for raw in split_messages(buf):
@@ -595,14 +749,21 @@ async def async_read_status(ip: str, device_id: str, local_key: str, *,
                 raise RuntimeError("connection closed before a complete reply")
             rbuf += chunk
         resp = decode_message(rbuf)
-        if resp.info_type != INFO_HELLO_RESP:
-            raise RuntimeError(f"unexpected reply {resp.info_code:#x}")
+        check_hello_resp(resp)
         writer.write(hello_done_message(sn=2, session=resp.session, pro_ver=pro_ver))
         await writer.drain()
         buf = b""
+        deadline = time.monotonic() + timeout
         while len(buf) < 8192:
+            # full timeout for the first bytes, then only a short idle window for stragglers - see
+            # the note in `read_status`. The deadline stops a peer that trickles bytes from holding
+            # the poll open indefinitely, since each read otherwise resets its own timeout.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            read_to = min(remaining, timeout if not buf else min(timeout, _COLLECT_IDLE))
             try:
-                chunk = await asyncio.wait_for(reader.read(4096), timeout)
+                chunk = await asyncio.wait_for(reader.read(4096), read_to)
             except TimeoutError:
                 break
             if not chunk:
@@ -657,11 +818,25 @@ def read_grsetdac_field(status_blob: bytes, name: str) -> int:
 
     The report carries the same packed words as a grSetDAC op (report[92:104]), so this lets the HA layer
     show the live state of fields the report parser doesn't already expose (the secondary toggles / eco)."""
+    return _field_from_words(grsetdac_baseline_from_status(status_blob), name)
+
+
+def _field_from_words(words: bytes, name: str) -> int:
+    """Read a confirmed grSetDAC field out of an already-extracted word block.
+
+    Bounds-checked, mirroring :func:`set_grsetdac_field`: a field living in a word the report does not
+    carry raises a clear ``ValueError`` instead of an ``IndexError`` from deep inside a decode. That
+    matters on the shorter layouts, where a word-5/6 field would otherwise kill the whole poll.
+    """
     if name not in GRSETDAC_FIELDS:
         raise KeyError(f"{name!r} is not a confirmed grSetDAC field")
-    words = grsetdac_baseline_from_status(status_blob)
     wi, shift, width = GRSETDAC_FIELDS[name]
     off = (wi - 1) * 2
+    if off + 1 >= len(words):
+        raise ValueError(
+            f"{name} lives in grSetDAC word {wi}, but this report carries only "
+            f"{len(words) // 2} word(s)"
+        )
     word = (words[off] << 8) | words[off + 1]
     return (word >> shift) & ((1 << width) - 1)
 
@@ -730,8 +905,7 @@ async def async_send_op(ip: str, device_id: str, local_key: str, epp_frame: byte
                 raise RuntimeError("connection closed before a complete reply")
             rbuf += chunk
         resp = decode_message(rbuf)
-        if resp.info_type != INFO_HELLO_RESP:
-            raise RuntimeError(f"unexpected reply {resp.info_code:#x}")
+        check_hello_resp(resp)
         writer.write(hello_done_message(sn=2, session=resp.session, pro_ver=pro_ver))
         await writer.drain()
         # The AC only accepts an op once the session is fully established — i.e. AFTER it sends

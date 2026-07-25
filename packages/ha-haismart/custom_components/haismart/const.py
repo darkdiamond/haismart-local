@@ -35,6 +35,10 @@ CONF_GATEWAY_PASSWORD = "gateway_password"
 CONF_DIGITAL_MODEL = "digital_model"
 # Cloud product_code/pid (e.g. AAC1UKZ01) — selects the AttributeProfile for status decode.
 CONF_PRODUCT_CODE = "product_code"
+# Human-readable identity from the cloud device list's `extendedInfo` (prodNo/model/brand). Shown on
+# the HA device page instead of the raw product code.
+CONF_MODEL_NAME = "model_name"
+CONF_BRAND = "brand"
 # The AC's localKey version at config time (HELLO_RESP payload). The key rotates server-side;
 # a version mismatch on a later probe means the cached key is stale -> reauth.
 CONF_LOCALKEY_VERSION = "localkey_version"
@@ -47,6 +51,16 @@ READ_TIMEOUT = 4.0  # per-connection socket timeout used by the uSS read cycle
 WRITE_TIMEOUT = 5.0  # per-connection socket timeout for a control (grSetDAC) op session
 
 MANUFACTURER = "Haier"
+
+# Haier's `deviceType` encodes the appliance class in its FIRST BYTE, as hex (from Haier's own uSDK
+# device-type enum; e.g. 0201201d -> 0x02 = split AC, 21001001 -> 0x21 = air purifier). Used to warn
+# when a picked device is not an air conditioner at all.
+AC_DEVICE_CLASSES: dict[str, str] = {
+    "02": "split AC",
+    "03": "cabinet AC",
+    "0d": "commercial AC",
+    "39": "window AC",
+}
 
 # Repairs: raised when the localKey rotated but the entry has no cloud credentials to self-heal, so
 # the user must reauth by hand. Advises adding account creds so rotation auto-refreshes in future.

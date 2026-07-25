@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     from homeassistant.components.dhcp import DhcpServiceInfo
 
 from .const import (
+    AC_DEVICE_CLASSES,
     CONF_ACCESS_TOKEN,
     CONF_CLOUD_CLIENT_ID,
     CONF_DEVICE_ID,
@@ -208,6 +209,23 @@ async def _async_resolve_host_arp(device_id: str) -> str | None:
         if str(host.get("macaddress", "")).replace(":", "").lower() == target:
             return host.get("ip")
     return None
+
+
+def _device_label(device: Any) -> str:
+    """Label a device for the picker, flagging anything that is not an air conditioner.
+
+    Haier's `deviceType` encodes the appliance class in its first byte as hex, so a fridge or an air
+    purifier on the same account is identifiable. Such devices are still listed rather than
+    hidden --
+    the class map may be incomplete, and hiding a unit the user can see in the app would be worse
+    than warning about it -- but they are clearly marked so nobody picks one expecting it to work.
+    """
+    name = device.name or device.device_id
+    label = f"{name} ({device.device_id})"
+    cls = (getattr(device, "device_type", "") or "")[:2].lower()
+    if cls and cls not in AC_DEVICE_CLASSES:
+        return f"{label} - not an air conditioner, unsupported"
+    return label
 
 
 class HaismartConfigFlow(ConfigFlow, domain=DOMAIN):

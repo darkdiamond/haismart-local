@@ -72,8 +72,17 @@ class HaismartClimate(HaismartEntity, ClimateEntity):
         seen: list[HVACMode] = [HVACMode.OFF]
         for token in profile.mode_values.values():
             hvac = _MODE_TO_HVAC.get(token)
-            if hvac is not None and hvac not in seen:
-                seen.append(hvac)
+            if hvac is None or hvac in seen:
+                continue
+            # `mode_values` doubles as the DECODE table, so the generic fallback lists every
+            # mode the protocol defines in order to name whatever the unit reports. That is not
+            # a capability
+            # list: offering Heat on a cooling-only unit gives the user a button that does nothing.
+            # Only advertise the full set when the profile came from this device's own digital model
+            # (or a hand-verified per-model profile).
+            if token == "heat" and not profile.modes_authoritative:
+                continue
+            seen.append(hvac)
         self._attr_hvac_modes = seen
         fans: list[str] = []
         for token in profile.fan_values.values():

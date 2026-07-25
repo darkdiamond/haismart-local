@@ -55,12 +55,12 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
-    state = coordinator.data or {}
-    entities: list[SensorEntity] = [
-        HaismartSensor(coordinator, desc)
-        for desc in SENSORS
-        if desc.value_fn(state) is not None
-    ]
+    # Create every sensor unconditionally and let `native_value` return None when a reading is
+    # absent.
+    # Gating creation on the FIRST poll's values meant a sensor missing at setup (a failed first
+    # refresh, or a report whose layout we can only partially decode) never appeared until the entry
+    # was reloaded.
+    entities: list[SensorEntity] = [HaismartSensor(coordinator, desc) for desc in SENSORS]
     # opt-in backup entity: exposes the localKey so it rides along in HA backups / can be copied.
     # It's a secret, so it's diagnostic + DISABLED by default (enable it, back it up, done).
     entities.append(HaismartLocalKeySensor(coordinator))

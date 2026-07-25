@@ -18,6 +18,10 @@ REAL_HELLO = bytes.fromhex(
     "0000ea60002a01000000000100000000" + DEV.encode().hex() + "00" * 20
 )
 REAL_HELLO_RESP = bytes.fromhex("0000ea610012010000000001000089fc0000000100000004")
+# The HELLO_RESP payload a real AC sends: status=1 (session accepted) + its localKey version. The
+# fakes below used an EMPTY payload, which parses as status=0 -> a refusal. That unrealistic fixture
+# is why nothing noticed that no call site ever checked the status field.
+HELLO_RESP_OK = bytes.fromhex("0000000100000004")
 # real decrypted status blob (127B), typeId AAC1UKZ01
 REAL_STATUS = bytes.fromhex(
     "00002715000000004e56010000030200000401" + "00" * 66
@@ -362,7 +366,7 @@ async def test_send_op_returns_promptly_after_reply_burst(monkeypatch):
     import time
 
     SESSION = 0x1234
-    hello_resp = uss.encode_message(uss.INFO_HELLO_RESP, 1, b"", session=SESSION)
+    hello_resp = uss.encode_message(uss.INFO_HELLO_RESP, 1, HELLO_RESP_OK, session=SESSION)
     done_resp = uss.encode_message(
         uss.INFO_HELLO_DONE_RESP, 2, uss.biz_encrypt(0, (547).to_bytes(4, "big"), LOCALKEY),
         flag=uss.FLAG_BIZ_ENCRYPTED, session=SESSION,
@@ -414,7 +418,7 @@ async def test_send_op_build_frame_seeds_from_in_session_push(monkeypatch):
     import asyncio
 
     SESSION = 0x1234
-    hello_resp = uss.encode_message(uss.INFO_HELLO_RESP, 1, b"", session=SESSION)
+    hello_resp = uss.encode_message(uss.INFO_HELLO_RESP, 1, HELLO_RESP_OK, session=SESSION)
     done_resp = uss.encode_message(
         uss.INFO_HELLO_DONE_RESP, 2, uss.biz_encrypt(0, (547).to_bytes(4, "big"), LOCALKEY),
         flag=uss.FLAG_BIZ_ENCRYPTED, session=SESSION,
@@ -497,10 +501,33 @@ def test_parse_full_status_decodes_the_125_byte_variant():
     }
 
 
-def test_parse_full_status_ignores_an_unknown_report_length():
-    # regression: an unrecognised length must decode to {} rather than misread a neighbouring byte
-    assert uss.parse_full_status(STATUS_125 + b"\x00") == {}
-    assert uss.parse_full_status(STATUS_125[:-1]) == {}
+def test_parse_full_status_partially_decodes_an_unknown_report_length():
+    """An unrecognised length yields the layout-INDEPENDENT fields, flagged, never a silent {}.
+
+    Bytes 92-97 are grSetDAC words 1-3, which sit before anything the word count shifts, so a brand
+    new model still gets a working thermostat. Everything whose offset depends on the word count is
+    omitted rather than guessed.
+    """
+    for blob in (STATUS_125 + b"\x00", STATUS_125[:-1]):   # odd span -> not derivable
+        assert uss.derive_status_layout(blob) is None
+        state = uss.parse_full_status(blob)
+        assert state["partial"] is True and state["layout"] == "unknown"
+        # layout-independent fields still decode, and agree with the real 125-byte report
+        assert state["power"] is False
+        assert state["target_temperature"] == 24.0
+        assert state["operation_mode"] == "1"
+        assert state["wind_speed"] == "5"
+        assert state["swing_vertical"] is True
+        # ...and nothing that depends on the word count is invented
+        for absent in ("current_temperature", "outdoor_temperature", "swing_horizontal", "eco"):
+            assert absent not in state
+
+
+def test_parse_full_status_rejects_blobs_that_are_not_status_reports():
+    assert uss.parse_full_status(b"") == {}
+    assert uss.parse_full_status(b"\x00\x00\x99\x99" + bytes(121)) == {}   # wrong container type
+    # right magic but too short to hold even the layout-independent fields
+    assert uss.parse_full_status(b"\x00\x00\x27\x15" + bytes(90)) == {}
 
 
 def test_grsetdac_baseline_tracks_the_report_layout():
@@ -596,3 +623,32 @@ def test_horizontal_swing_enum_matches_the_digital_model_codes():
     assert uss.GRSETDAC_ENUMS["windDirectionHorizontal"] == {"off": 0x00, "on": 0x07}
     assert uss.GRSETDAC_ALLOWED_VALUES["windDirectionHorizontal"] == {0x00, 0x07}
     assert uss.GRSETDAC_FIELDS["windDirectionHorizontal"] == (4, 0, 3)
+
+
+def test_check_hello_resp_rejects_a_refused_session():
+    """status != 1 must raise, not sail on into hello_done and an empty status collect.
+
+    A refused session used to be indistinguishable from a stale localKey or a dead network, because
+    only `info_type` was checked; worse, the write path would send a control op into it.
+    """
+    refused = uss.decode_message(
+        uss.encode_message(uss.INFO_HELLO_RESP, 1, bytes.fromhex("0000000000000004"), session=0x1234)
+    )
+    with pytest.raises(RuntimeError, match="rejected the handshake"):
+        uss.check_hello_resp(refused)
+
+    wrong_type = uss.decode_message(uss.encode_message(uss.INFO_HELLO_DONE_RESP, 1, HELLO_RESP_OK))
+    with pytest.raises(RuntimeError, match="unexpected reply"):
+        uss.check_hello_resp(wrong_type)
+
+    ok = uss.decode_message(uss.encode_message(uss.INFO_HELLO_RESP, 1, HELLO_RESP_OK, session=0x1234))
+    assert uss.check_hello_resp(ok).localkey_version == 4
+
+
+def test_split_messages_stops_on_a_desynchronised_frame():
+    """A declared length under 0x0A cannot be a frame; yielding it would raise inside a collect loop."""
+    good = uss.encode_message(uss.INFO_HELLO_RESP, 1, HELLO_RESP_OK, session=1)
+    assert len(list(uss.split_messages(good))) == 1
+    bad = good + b"\x00\x00\xea\x61\x00\x03rubbish"
+    assert list(uss.split_messages(bad)) == [good]     # the good frame survives, the junk is dropped
+    assert list(uss.split_messages(b"\x00\x00\xea\x61\x00\x00")) == []   # total==0, must not loop
