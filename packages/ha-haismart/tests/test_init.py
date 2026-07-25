@@ -524,7 +524,7 @@ async def test_model_rejects_out_of_range_temperature(hass: HomeAssistant, mock_
     from homeassistant.exceptions import HomeAssistantError
 
     entry = await _setup_with_model(hass, _LOCKED_MODEL)
-    with pytest.raises(HomeAssistantError, match="device model"):
+    with pytest.raises(HomeAssistantError, match="does not accept that setting"):
         await entry.runtime_data.async_send_control({"targetTemperature": 30 - 16})
     assert mock_uss.send.await_count == 0  # rejected before any write
 
@@ -535,7 +535,7 @@ async def test_model_rejects_unsupported_enum(hass: HomeAssistant, mock_uss) -> 
 
     entry = await _setup_with_model(hass, _LOCKED_MODEL)
     # dry (2) passes the capture allowlist, but the model lists only cool -> the model vetoes it
-    with pytest.raises(HomeAssistantError, match="device model"):
+    with pytest.raises(HomeAssistantError, match="does not accept that setting"):
         await entry.runtime_data.async_send_control({"operationMode": 2})
     assert mock_uss.send.await_count == 0
 
@@ -595,7 +595,7 @@ async def test_model_valuerange_still_enforced_when_writable_bypassed(
     from homeassistant.exceptions import HomeAssistantError
 
     entry = await _setup_with_model(hass, _REAL_SHAPE_MODEL)
-    with pytest.raises(HomeAssistantError, match="device model"):
+    with pytest.raises(HomeAssistantError, match="does not accept that setting"):
         await entry.runtime_data.async_send_control({"targetTemperature": 40 - 16})
     assert mock_uss.send.await_count == 0
 
@@ -709,7 +709,7 @@ async def test_unknown_report_layout_degrades_and_reports(hass: HomeAssistant, m
     assert issues.async_get_issue(DOMAIN, f"{ISSUE_UNKNOWN_LAYOUT}_{coordinator.device_id}")
 
     # writing is refused, with a reason rather than a stack trace
-    with pytest.raises(HomeAssistantError, match="no confirmed layout"):
+    with pytest.raises(HomeAssistantError, match="not recognised"):
         await coordinator.async_send_control({"onOffStatus": 1})
 
 
@@ -730,3 +730,29 @@ async def test_diagnostics_carry_what_a_new_model_report_needs(
     assert diag["report"]["layout"]["resolved"] is True
     assert diag["report"]["layout"]["verified"] is True
     assert diag["last_raw_status"] == mock_uss.frame.hex()
+
+
+async def test_control_errors_are_translated_and_name_the_device(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """Control failures must read as sentences, not as raw Python.
+
+    They used to surface as `failed to send control to 192.168.1.50: [Errno 113] No route to host`
+    and `control rejected by the device model: ...` — untranslatable, and written for whoever wrote
+    the code rather than whoever is holding the phone.
+    """
+    from homeassistant.exceptions import HomeAssistantError
+
+    await _setup(hass)
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    coordinator = entry.runtime_data
+
+    mock_uss.send.side_effect = OSError("[Errno 113] No route to host")
+    with pytest.raises(HomeAssistantError) as err:
+        await coordinator.async_send_control({"onOffStatus": 1})
+
+    assert err.value.translation_domain == DOMAIN
+    assert err.value.translation_key == "control_failed"
+    message = str(err.value)
+    assert entry.title in message, "the message should say WHICH air conditioner"
+    assert "No route to host" in message, "the underlying cause is still worth keeping"

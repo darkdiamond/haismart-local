@@ -393,14 +393,17 @@ class HaismartConfigFlow(ConfigFlow, domain=DOMAIN):
             try:
                 model = await self._cloud.get_digital_model(device_id)
                 self._cloud_data[CONF_DIGITAL_MODEL] = json.dumps(model)
-            except (CloudError, OSError, RuntimeError, TimeoutError, ValueError):
-                pass
+            except (CloudError, OSError, RuntimeError, TimeoutError, ValueError) as err:
+                # degrades the profile and the write validation, so it should not be invisible
+                _LOGGER.warning("could not fetch the digital model for %s: %s", device_id, err)
         # localKey from the cloud gateway — the whole point: no paste
         try:
             self._local_key, self._localkey_version = await _async_fetch_localkey(
                 self.hass, self._cloud_data, device_id
             )
-        except (GatewayError, KeyError, OSError, RuntimeError, TimeoutError):
+        except (GatewayError, KeyError, OSError, RuntimeError, TimeoutError) as err:
+            # was silently swallowed, so neither the user nor the log knew anything had gone wrong
+            _LOGGER.warning("could not fetch the localKey for %s: %s", device_id, err)
             self._local_key = None
         # resolve the LAN IP from mDNS so the user needn't type it either
         if not self._discovered.get(CONF_HOST):
@@ -413,23 +416,30 @@ class HaismartConfigFlow(ConfigFlow, domain=DOMAIN):
         """Create the entry when host + auto-fetched key are both known; otherwise ask for just the
         missing piece (the key, if the gateway fetch failed; else only the LAN IP)."""
         if self._local_key is None:
-            return await self.async_step_manual()  # gateway fetch failed -> paste the key
+            return await self.async_step_key_failed()
         if self._discovered.get(CONF_HOST):
-            result = await self._async_create_from_state()
-            if result is not None:
-                return result
-            self._discovered.pop(CONF_HOST, None)  # that IP didn't validate -> ask
+            try:
+                return await self._async_create_from_state()
+            except InvalidAuth:
+                # The host answered; the KEY is what is wrong. Keep the resolved IP -- discarding it
+                # made the next form come up blank and look like discovery had failed too.
+                return await self.async_step_key_failed()
+            except CannotConnect:
+                self._discovered.pop(CONF_HOST, None)  # that IP didn't validate -> ask for one
         return await self.async_step_host()
 
-    async def _async_create_from_state(self) -> ConfigFlowResult | None:
-        """Validate host + the auto-fetched key live and create the entry; None if it didn't."""
+    async def _async_create_from_state(self) -> ConfigFlowResult:
+        """Validate host + the auto-fetched key live and create the entry.
+
+        Raises ``CannotConnect`` or ``InvalidAuth`` rather than collapsing both to ``None``. They
+        need opposite responses: a bad host should re-ask for the IP, while a key that does not
+        decrypt means the IP was fine all along -- and reporting that on the IP form sent people off
+        checking their subnet and rebooting their router.
+        """
         host = self._discovered[CONF_HOST]
         device_id = self._discovered[CONF_DEVICE_ID]
         assert self._local_key is not None
-        try:
-            version = await _async_validate(self.hass, host, device_id, self._local_key)
-        except (CannotConnect, InvalidAuth):
-            return None
+        version = await _async_validate(self.hass, host, device_id, self._local_key)
         return self.async_create_entry(
             title=self._discovered.get(CONF_NAME) or f"Haier {device_id}",
             data={
@@ -442,6 +452,35 @@ class HaismartConfigFlow(ConfigFlow, domain=DOMAIN):
             },
         )
 
+    async def async_step_key_failed(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """The automatic key fetch failed, or the fetched key does not decrypt.
+
+        Previously this dropped the user straight onto the manual form -- which asks for a 32-hex
+        localKey, right after `pick_device` promised they would not have to paste anything, and
+        which they have no way to obtain by hand. That is a dead end. Offer a retry first: the
+        fetch is attempted exactly once against an 8s timeout, and transient failures are common.
+        """
+        return self.async_show_menu(
+            step_id="key_failed", menu_options=["key_retry", "manual"]
+        )
+
+    async def async_step_key_retry(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Try the cloud key fetch once more, then continue as normal."""
+        device_id = self._discovered[CONF_DEVICE_ID]
+        try:
+            self._local_key, self._localkey_version = await _async_fetch_localkey(
+                self.hass, self._cloud_data, device_id
+            )
+        except (GatewayError, KeyError, OSError, RuntimeError, TimeoutError) as err:
+            _LOGGER.warning("retrying the localKey fetch for %s failed: %s", device_id, err)
+            self._local_key = None
+            return await self.async_step_key_failed()
+        return await self._async_finish_or_ask_host()
+
     async def async_step_host(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -449,10 +488,13 @@ class HaismartConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             self._discovered[CONF_HOST] = user_input[CONF_HOST].strip()
-            result = await self._async_create_from_state()
-            if result is not None:
-                return result
-            errors["base"] = "cannot_connect"
+            try:
+                return await self._async_create_from_state()
+            except InvalidAuth:
+                # the IP is right; the key is the problem, so do not blame this form for it
+                return await self.async_step_key_failed()
+            except CannotConnect:
+                errors["base"] = "cannot_connect"
         return self.async_show_form(
             step_id="host",
             data_schema=vol.Schema(
@@ -539,11 +581,180 @@ class HaismartConfigFlow(ConfigFlow, domain=DOMAIN):
         self.context["title_placeholders"] = {"device_id": device_id}
         return await self.async_step_manual()
 
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Change an existing AC's settings without deleting and re-adding it.
+
+        This did not exist, yet the stale-key repair told users to "reconfigure the device with your
+        Haismart account" -- so the only actual route was delete-and-re-add, losing history, entity
+        ids and every automation referencing them.
+        """
+        entry = self._get_reconfigure_entry()
+        options = ["reconfigure_host"]
+        if not entry.data.get(CONF_REFRESH_TOKEN):
+            # only worth offering when it would actually change something
+            options.append("reconfigure_cloud")
+        return self.async_show_menu(step_id="reconfigure", menu_options=options)
+
+    async def async_step_reconfigure_host(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Point an existing entry at a new IP, validating BEFORE committing.
+
+        Re-running the manual flow with the same device id also updates the host, but it does so
+        before validating, so a typo silently took a working entry offline while reporting only
+        "already configured".
+        """
+        entry = self._get_reconfigure_entry()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            host = user_input[CONF_HOST].strip()
+            try:
+                version = await _async_validate(
+                    self.hass, host, entry.data[CONF_DEVICE_ID], entry.data[CONF_LOCAL_KEY]
+                )
+            except InvalidAuth:
+                errors["base"] = "invalid_auth"
+            except CannotConnect:
+                errors["base"] = "cannot_connect"
+            else:
+                return self.async_update_reload_and_abort(
+                    entry,
+                    data_updates={CONF_HOST: host, CONF_LOCALKEY_VERSION: version},
+                )
+        return self.async_show_form(
+            step_id="reconfigure_host",
+            data_schema=vol.Schema(
+                {vol.Required(CONF_HOST, default=entry.data.get(CONF_HOST)): str}
+            ),
+            errors=errors,
+        )
+
+    async def async_step_reconfigure_cloud(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Attach Haier account credentials to an entry added by hand.
+
+        This is what the stale-key repair has always advised: with account credentials stored, a
+        server-side key rotation is re-fetched automatically instead of prompting for a key the user
+        cannot obtain.
+        """
+        entry = self._get_reconfigure_entry()
+        errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {}
+        if user_input is not None:
+            zone = str(user_input.get(CONF_ZONE_INFO, "")).strip().lstrip("+")
+            try:
+                _cloud, cloud_data = await _async_login_cloud(
+                    user_input[CONF_USERNAME], user_input[CONF_PASSWORD], zone
+                )
+            except CloudAuthError as err:
+                errors["base"] = _login_error_for(err)
+                placeholders = {"username": user_input[CONF_USERNAME], "zone": zone}
+            except (CloudError, OSError, RuntimeError, TimeoutError) as err:
+                _LOGGER.warning("attaching cloud credentials failed: %s", err)
+                errors["base"] = "cannot_connect_cloud"
+            else:
+                return self.async_update_reload_and_abort(entry, data_updates=cloud_data)
+        default_zone = default_dial_code(self.hass.config.country)
+        zone_field = (
+            vol.Required(CONF_ZONE_INFO, default=default_zone)
+            if default_zone
+            else vol.Required(CONF_ZONE_INFO)
+        )
+        return self.async_show_form(
+            step_id="reconfigure_cloud",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_USERNAME): str,
+                    vol.Required(CONF_PASSWORD): TextSelector(
+                        TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                    ),
+                    zone_field: SelectSelector(
+                        SelectSelectorConfig(
+                            options=country_options(),
+                            mode=SelectSelectorMode.DROPDOWN,
+                            custom_value=True,
+                        )
+                    ),
+                }
+            ),
+            errors=errors,
+            description_placeholders=placeholders,
+        )
+
     async def async_step_reauth(
         self, entry_data: dict[str, Any]
     ) -> ConfigFlowResult:
-        """localKey rotated server-side; collect the freshly re-pulled key."""
-        return await self.async_step_reauth_confirm()
+        """The localKey rotated. Offer to re-fetch it rather than only demanding it.
+
+        Reauth is reached only AFTER an automatic gateway refresh has already failed, and the most
+        likely reason is an expired refreshToken -- which signing in again fixes instantly. Asking
+        solely for a 32-hex key demands a value the user has no way to produce.
+        """
+        return self.async_show_menu(
+            step_id="reauth", menu_options=["reauth_cloud", "reauth_confirm"]
+        )
+
+    async def async_step_reauth_cloud(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Sign in again and re-fetch this AC's key automatically."""
+        entry = self._get_reauth_entry()
+        errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {}
+        if user_input is not None:
+            zone = str(user_input.get(CONF_ZONE_INFO, "")).strip().lstrip("+")
+            device_id = entry.data[CONF_DEVICE_ID]
+            try:
+                _cloud, cloud_data = await _async_login_cloud(
+                    user_input[CONF_USERNAME], user_input[CONF_PASSWORD], zone
+                )
+                local_key, version = await _async_fetch_localkey(
+                    self.hass, cloud_data, device_id
+                )
+            except CloudAuthError as err:
+                errors["base"] = _login_error_for(err)
+                placeholders = {"username": user_input[CONF_USERNAME], "zone": zone}
+            except (CloudError, GatewayError, KeyError, OSError, RuntimeError, TimeoutError) as err:
+                _LOGGER.warning("re-fetching the localKey for %s failed: %s", device_id, err)
+                errors["base"] = "cannot_connect_cloud"
+            else:
+                return self.async_update_reload_and_abort(
+                    entry,
+                    data_updates={
+                        CONF_LOCAL_KEY: local_key,
+                        CONF_LOCALKEY_VERSION: version,
+                        **cloud_data,
+                    },
+                )
+        default_zone = default_dial_code(self.hass.config.country)
+        zone_field = (
+            vol.Required(CONF_ZONE_INFO, default=default_zone)
+            if default_zone
+            else vol.Required(CONF_ZONE_INFO)
+        )
+        return self.async_show_form(
+            step_id="reauth_cloud",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_USERNAME): str,
+                    vol.Required(CONF_PASSWORD): TextSelector(
+                        TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                    ),
+                    zone_field: SelectSelector(
+                        SelectSelectorConfig(
+                            options=country_options(),
+                            mode=SelectSelectorMode.DROPDOWN,
+                            custom_value=True,
+                        )
+                    ),
+                }
+            ),
+            errors=errors,
+            description_placeholders=placeholders,
+        )
 
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None

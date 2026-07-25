@@ -267,14 +267,22 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # control-word block is exactly what could not be determined, so a group-set built from
             # it could send a read-only sensor byte back to the AC as a setting.
             raise HomeAssistantError(
-                f"control is disabled for this air conditioner: its {self.unknown_layout}-byte "
-                "status report has no confirmed layout yet, so a command could not be built safely"
+                translation_domain=DOMAIN,
+                translation_key="layout_unknown",
+                translation_placeholders={
+                    "name": self.config_entry.title,
+                    "length": str(self.unknown_layout),
+                },
             )
 
         def _build(baseline: bytes | None) -> bytes:
             base = baseline if baseline is not None else self.last_raw_status
             if base is None:
-                raise HomeAssistantError("no status available to seed the control command")
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="no_status",
+                    translation_placeholders={"name": self.config_entry.title},
+                )
             if baseline is not None:  # refresh the cache from the fresh in-session baseline
                 self._misses = 0
                 self.last_raw_status = baseline
@@ -294,9 +302,17 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except HomeAssistantError:
             raise
         except (ValueError, KeyError) as err:
-            raise HomeAssistantError(f"invalid control command {changes}: {err}") from err
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="control_rejected",
+                translation_placeholders={"name": self.config_entry.title, "error": str(err)},
+            ) from err
         except (OSError, RuntimeError, TimeoutError) as err:
-            raise HomeAssistantError(f"failed to send control to {self.host}: {err}") from err
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="control_failed",
+                translation_placeholders={"name": self.config_entry.title, "error": str(err)},
+            ) from err
         # The AC echoes its UPDATED state on the op's own connection (the protocol), so confirm
         # from that reply directly — instant, one fewer connection. Fall back to a read cycle only
         # if the reply carried no decodable full-status report.
@@ -338,7 +354,14 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # allowlist in ``set_grsetdac_field``, which is proven against real hardware.
             ok, reason = validate_write(model, name, to_model(epp), require_writable=False)
             if not ok:
-                raise HomeAssistantError(f"control rejected by the device model: {reason}")
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="control_rejected",
+                    translation_placeholders={
+                        "name": self.config_entry.title,
+                        "error": reason,
+                    },
+                )
 
     @property
     def local_key(self) -> str:

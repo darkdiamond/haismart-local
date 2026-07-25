@@ -166,6 +166,34 @@
       "local_key": {
         "name": "Local key"
       }
+    },
+    "switch": {
+      "strong": {
+        "name": "Strong"
+      },
+      "quiet": {
+        "name": "Quiet"
+      },
+      "health": {
+        "name": "Health"
+      },
+      "sleep": {
+        "name": "Sleep"
+      },
+      "lamp": {
+        "name": "Display light"
+      }
+    },
+    "select": {
+      "eco": {
+        "name": "Eco",
+        "state": {
+          "off": "Off",
+          "level1": "Eco 5",
+          "level2": "Eco 6",
+          "level3": "Eco 7"
+        }
+      }
     }
   },
   "issues": {
@@ -176,6 +204,23 @@
     "unknown_report_layout": {
       "title": "{name}: this air conditioner's status format is not recognised yet",
       "description": "{name} sends a {length}-byte status report, which this integration has no confirmed layout for (product code: {product_code}).\n\nTemperature, mode, fan speed and on/off still work. Indoor and outdoor temperature are unavailable, and sending commands is disabled — guessing where the settings sit in an unknown format risks writing a sensor reading back to the unit as a setting.\n\nAdding support needs no code, just three short captures from you. Follow the linked guide and open a report; it is usually a one-line fix."
+    }
+  },
+  "exceptions": {
+    "control_failed": {
+      "message": "Could not send the command to {name}: {error}"
+    },
+    "control_rejected": {
+      "message": "{name} does not accept that setting: {error}"
+    },
+    "no_status": {
+      "message": "Home Assistant has not read {name}'s current state yet, so it cannot send a command — every command is built from the unit's live settings so the rest are preserved. Wait for the next update and try again."
+    },
+    "layout_unknown": {
+      "message": "Control is disabled for {name}: its {length}-byte status format is not recognised, so a command cannot be built safely. See the repair notification."
+    },
+    "unsupported_value": {
+      "message": "{name} does not support {value!r} for {field}."
     }
   }
 }
