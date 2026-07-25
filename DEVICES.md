@@ -1,0 +1,41 @@
+# Supported devices
+
+Model number alone is **not** a sufficient compatibility key — the Wi-Fi module and its firmware
+matter at least as much. Two units with the same model sticker can behave differently if one shipped
+with a newer module. Please record all three when you report a unit.
+
+The integration builds itself from the model description your AC's own cloud profile provides, so a
+model missing from this table will very likely still work. The table records what has actually been
+**observed**, not the limit of what is supported.
+
+## Confirmed working
+
+| Product code | Model | Report | Heat | Notes |
+|---|---|---|---|---|
+| `AACRL2E00` | PRO X INV-42/3PH | 125-byte, 5 control words | ✅ | `deviceType 0201201d`, OUI `24:E8:CE`. Reverse-cycle wall-mounted split; the reference unit for heat support. |
+| `AAC1UKZ01` | HSU-24VRRA03TF | 127-byte, 6 control words | ❌ | `deviceType 0201203a`, OUI `AC:B7:22`. Cooling-only. The original unit this project was written for. |
+
+## Known NOT to work
+
+These pair with the **hOn** app. Their Wi-Fi modules refuse the connection outright
+(`ECONNREFUSED` on port 56800) — there is no local listener at all, so this is not something that can
+be fixed here. Use [Andre0512/hon](https://github.com/Andre0512/hon) instead.
+
+`AS35TAMHRA-C` · `AS50S2SF1FA-BH` · `AS25S2SF1FA-BH` · `AS352SF1FA-WH` ·
+`adh125h1erg` (module `HI-WB101DEI`) · `1U71RACFRA` (SmartHQ)
+
+## Older SmartAir2 units
+
+Units pairing with **SmartAir2 / Smart Clima** use the same port with an older, unencrypted variant
+that has no local key. They are not supported here; see
+[oxystin/homebridge-haier-air-conditioner](https://github.com/oxystin/homebridge-haier-air-conditioner),
+which lists `AS09QS2ERA-W`, `AD35S2SS1FA`, `HSU-07HT103/R2`, `AS50S2SD1FA-CL` and others as working.
+
+Worth noting from that project: module `KZW-W002` firmware `e_2.3.12` works while `2.5.14` does not
+— a concrete example of firmware mattering more than the model number.
+
+## Report yours
+
+Whether it works or not, please tell us — use the
+[new model report](https://github.com/darkdiamond/haismart-local/issues/new?template=new_model.yml)
+issue template, or follow [`docs/new-model.md`](docs/new-model.md).

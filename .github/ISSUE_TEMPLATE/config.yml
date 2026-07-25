@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question or general discussion
+    url: https://github.com/darkdiamond/haismart-local/discussions
+    about: Ask a question or share how you are using the integration.
+  - name: My AC uses the hOn app
+    url: https://github.com/Andre0512/hon
+    about: hOn units do not open the local port at all - that project is what you want.

@@ -1,0 +1,35 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 4 * * 1"
+
+permissions: {}
+
+jobs:
+  hassfest:
+    name: Hassfest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    name: HACS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: hacs/action@main
+        with:
+          category: integration
+          # `brands` stays ignored until the `haismart` domain is accepted into
+          # home-assistant/brands, which a fork cannot do on its own.
+          ignore: brands
