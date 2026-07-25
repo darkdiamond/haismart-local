@@ -211,6 +211,17 @@ async def test_reauth_flow_updates_key_and_version(hass: HomeAssistant, mock_uss
     flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
     assert len(flows) == 1
 
+    # reauth now OFFERS to re-fetch the key rather than only demanding it, so pick the manual
+    # branch explicitly -- a menu is the whole point: the automatic path is the right default for a
+    # user who has no way to produce a 32-hex key by hand.
+    menu = await hass.config_entries.flow.async_configure(flows[0]["flow_id"])
+    assert menu["step_id"] == "reauth"
+    assert set(menu["menu_options"]) == {"reauth_cloud", "reauth_confirm"}
+    confirm = await hass.config_entries.flow.async_configure(
+        flows[0]["flow_id"], {"next_step_id": "reauth_confirm"}
+    )
+    assert confirm["step_id"] == "reauth_confirm"
+
     new_key = "ffeeddccbbaa99887766554433221100"
     result = await hass.config_entries.flow.async_configure(
         flows[0]["flow_id"], {CONF_LOCAL_KEY: new_key}
@@ -338,7 +349,12 @@ async def test_login_flow_autofetches_key_asks_only_host(hass: HomeAssistant, mo
 async def test_login_flow_falls_back_to_manual_if_gateway_fails(
     hass: HomeAssistant, mock_uss
 ) -> None:
-    """If the cloud gateway can't return the key, fall back to the manual key form (graceful)."""
+    """A failed key fetch reaches a step that explains itself and offers a retry.
+
+    It used to drop the user straight onto the manual form, which demands a 32-hex key seconds after
+    the previous step promised they would not have to paste anything -- and which they have no way
+    to obtain by hand. That was a dead end; the only way out was to abandon setup.
+    """
     from unittest.mock import AsyncMock, patch
 
     from haismart_extractor import GatewayError
@@ -349,7 +365,13 @@ async def test_login_flow_falls_back_to_manual_if_gateway_fails(
         patch("custom_components.haismart.config_flow._async_resolve_host",
               new=AsyncMock(return_value=None)),
     ])
-    assert result["step_id"] == "manual"                        # asks for the key by hand
+    assert result["step_id"] == "key_failed"
+    assert set(result["menu_options"]) == {"key_retry", "manual"}
+
+    manual = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "manual"}
+    )
+    assert manual["step_id"] == "manual"
     result2 = await hass.config_entries.flow.async_configure(
         result["flow_id"],
         {CONF_HOST: "192.168.1.50", CONF_DEVICE_ID: "A1B2C3D4E5F6", CONF_LOCAL_KEY: LOCAL_KEY},
@@ -633,3 +655,62 @@ def test_strings_and_english_translation_are_in_sync() -> None:
     a = json.loads((root / "strings.json").read_text(encoding="utf-8"))
     b = json.loads((root / "translations" / "en.json").read_text(encoding="utf-8"))
     assert a == b, "strings.json and translations/en.json have diverged"
+
+
+async def test_key_retry_succeeds_on_the_second_attempt(hass: HomeAssistant, mock_uss) -> None:
+    """The retry offered by key_failed actually re-runs the fetch and completes setup."""
+    from unittest.mock import AsyncMock, patch
+
+    from haismart_extractor import GatewayError
+
+    fetch = AsyncMock(side_effect=[GatewayError("CONNACK rc=5"), (LOCAL_KEY, 4)])
+    with patch("custom_components.haismart.config_flow._async_fetch_localkey", new=fetch):
+        result = await _drive_login_to_pick(hass, mock_uss, [
+            patch("custom_components.haismart.config_flow._async_resolve_host",
+                  new=AsyncMock(return_value="192.168.1.50")),
+        ])
+        assert result["step_id"] == "key_failed"
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"next_step_id": "key_retry"}
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_LOCAL_KEY] == LOCAL_KEY
+    assert fetch.await_count == 2
+
+
+async def test_reconfigure_changes_the_host_only_after_validating(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """A bad address must not be committed.
+
+    Re-running the manual flow with the same device id also rewrites the host, but it does so
+    BEFORE validating -- so a typo silently took a working entry offline while reporting nothing
+    more useful than "already configured".
+    """
+    entry = _entry()
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await entry.start_reconfigure_flow(hass)
+    assert result["step_id"] == "reconfigure"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "reconfigure_host"}
+    )
+
+    mock_uss.probe.side_effect = OSError("no route to host")
+    bad = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_HOST: "192.168.1.99"}
+    )
+    assert bad["errors"] == {"base": "cannot_connect"}
+    assert entry.data[CONF_HOST] != "192.168.1.99", "a rejected host must not be committed"
+
+    mock_uss.probe.side_effect = None
+    good = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_HOST: "192.168.1.77"}
+    )
+    await hass.async_block_till_done()
+    assert good["type"] == FlowResultType.ABORT
+    assert entry.data[CONF_HOST] == "192.168.1.77"
