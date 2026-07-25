@@ -4,6 +4,7 @@ from __future__ import annotations
 from ipaddress import ip_address
 
 import pytest
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -15,6 +16,7 @@ from custom_components.haismart.const import (
     CONF_LOCALKEY_VERSION,
     CONF_PRODUCT_CODE,
     CONF_SCAN_INTERVAL,
+    CONF_ZONE_INFO,
     DOMAIN,
 )
 
@@ -398,7 +400,9 @@ async def test_login_flow_email_password_hands_off(hass: HomeAssistant, mock_uss
         new=AsyncMock(return_value="192.168.1.50"),
     ):
         result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_USERNAME: "me@example.com", CONF_PASSWORD: "hunter2"}
+            result["flow_id"],
+            # the country is now an explicit choice: there is no hardcoded default to fall back on
+            {CONF_USERNAME: "me@example.com", CONF_PASSWORD: "hunter2", CONF_ZONE_INFO: "66"},
         )
         assert result["step_id"] == "pick_device"
         result = await hass.config_entries.flow.async_configure(
@@ -428,7 +432,8 @@ async def test_login_flow_auth_error_shows_form(hass: HomeAssistant, mock_uss) -
         side_effect=CloudAuthError("retCode B00002-00002: bad password"),
     ):
         result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_USERNAME: "x@y.com", CONF_PASSWORD: "wrong"}
+            result["flow_id"],
+            {CONF_USERNAME: "x@y.com", CONF_PASSWORD: "wrong", CONF_ZONE_INFO: "66"},
         )
     assert result["type"] == FlowResultType.FORM
     assert result["step_id"] == "login"
@@ -519,3 +524,112 @@ async def test_multiple_devices_added_one_at_a_time(hass: HomeAssistant, mock_us
         r = await _to_picker()
         assert r["type"] == FlowResultType.ABORT
         assert r["reason"] == "all_configured"
+
+
+async def test_login_country_defaults_from_the_ha_instance(hass: HomeAssistant, mock_uss) -> None:
+    """The country field pre-selects from hass.config.country instead of a hardcoded guess.
+
+    It used to default to 66 (Thailand) for everybody, which is wrong for nearly every user, and
+    a wrong region is reported by Haier as "account is not registered" - so it reads as a bad
+    password. Where the country is unknown the field is left EMPTY on purpose: no default beats
+    a plausible-looking wrong one.
+    """
+    from custom_components.haismart.countries import default_dial_code
+
+    assert default_dial_code("IL") == "972"
+    assert default_dial_code("il") == "972"
+    assert default_dial_code("TH") == "66"
+    assert default_dial_code(None) is None
+    assert default_dial_code("ZZ") is None
+
+    await hass.config.async_update(country="IL")
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "login"}
+    )
+    schema = result["data_schema"].schema
+    zone_key = next(k for k in schema if str(k) == CONF_ZONE_INFO)
+    assert zone_key.default() == "972", "an Israeli HA instance should pre-select +972"
+
+
+async def test_login_wrong_region_gets_its_own_error(hass: HomeAssistant, mock_uss) -> None:
+    """retCode 30032 must not be collapsed into the generic 'check all three fields' message."""
+    from custom_components.haismart.config_flow import CloudAuthError, _login_error_for
+
+    wrong_region = CloudAuthError("login -> retCode 30032: Account is not registered")
+    assert _login_error_for(wrong_region) == "account_not_in_region"
+    missing = CloudAuthError("login -> retCode 10001: missing field")
+    assert _login_error_for(missing) == "missing_field"
+    bad_password = CloudAuthError("login -> retCode B00002: bad password")
+    assert _login_error_for(bad_password) == "cloud_auth"
+
+
+async def test_login_with_no_devices_aborts(hass: HomeAssistant, mock_uss) -> None:
+    """Sign-in succeeded; the account is simply empty.
+
+    Re-showing the form as an error invites an endless retype of credentials that were correct,
+    and throws away the tokens just obtained.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    cloud = MagicMock()
+    cloud.list_devices_v2 = AsyncMock(return_value=[])
+    with patch(
+        "custom_components.haismart.config_flow._async_login_cloud",
+        AsyncMock(return_value=(cloud, {})),
+    ):
+        result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"next_step_id": "login"}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_USERNAME: "me@example.com", CONF_PASSWORD: "pw", CONF_ZONE_INFO: "972"},
+        )
+    assert result["type"] == "abort"
+    assert result["reason"] == "no_devices"
+
+
+def test_every_error_and_abort_string_exists() -> None:
+    """Each errors["base"] / async_abort(reason=...) literal must resolve to a real string.
+
+    A missing key renders in the UI as the raw slug, which is invisible in tests and only ever
+    noticed by a user hitting the error path. This also catches strings left behind after the code
+    that raised them is gone.
+    """
+    import json
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "custom_components" / "haismart"
+    source = (root / "config_flow.py").read_text(encoding="utf-8")
+    strings = json.loads((root / "strings.json").read_text(encoding="utf-8"))
+
+    declared_errors = set(strings["config"]["error"])
+    declared_aborts = set(strings["config"]["abort"])
+    used_errors = set(re.findall(r'errors\["base"\]\s*=\s*"([a-z_]+)"', source))
+    used_errors |= set(re.findall(r'return "([a-z_]+)"', source))     # _login_error_for
+    used_aborts = set(re.findall(r'reason="([a-z_]+)"', source))
+
+    # HA supplies these itself; they need no local definition
+    builtin_aborts = {"already_configured", "reauth_successful", "already_in_progress"}
+
+    assert not (used_errors - declared_errors), (
+        f"config_flow raises errors with no string: {sorted(used_errors - declared_errors)}"
+    )
+    assert not (used_aborts - declared_aborts - builtin_aborts), (
+        f"config_flow aborts with no string: {sorted(used_aborts - declared_aborts)}"
+    )
+    unused = declared_errors - used_errors
+    assert not unused, f"strings.json declares errors nothing raises: {sorted(unused)}"
+
+
+def test_strings_and_english_translation_are_in_sync() -> None:
+    """en.json is the shipped copy of strings.json; drift means the UI shows stale text."""
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "custom_components" / "haismart"
+    a = json.loads((root / "strings.json").read_text(encoding="utf-8"))
+    b = json.loads((root / "translations" / "en.json").read_text(encoding="utf-8"))
+    assert a == b, "strings.json and translations/en.json have diverged"

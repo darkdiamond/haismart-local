@@ -6,17 +6,22 @@
         "title": "Add a Haier AC",
         "description": "Sign in with your Haismart email/password, or enter the device details manually. Google/Facebook accounts: create a throwaway email/password Haier account, share your AC(s) to it in the app, then sign in with that account.",
         "menu_options": {
-          "login": "Sign in with email or password",
-          "manual": "Enter device details manually"
+          "login": "Sign in with your Haier account (email or phone + password)",
+          "manual": "Enter the device details myself"
         }
       },
       "login": {
-        "title": "Sign in",
-        "description": "Enter your Haismart email (or phone) + password and your region code (phone country code, e.g. 66 Thailand, 65 Singapore). Google/Facebook accounts have no password — create a throwaway email/password account, share your AC(s) to it in the app, then sign in with that account here.",
+        "title": "Sign in to your Haier account",
+        "description": "Use the same account you use in the Haier / Haismart app. Sign-in happens once — after this, Home Assistant talks only to the air conditioner on your network.\n\nSigning in with Google or Facebook? Those accounts have no password. Create a Haier account with an email and password, share the AC to it in the app, then sign in with that one here.",
         "data": {
-          "username": "Email or phone",
+          "username": "Email or phone number",
           "password": "Password",
-          "zone_info": "Region code (e.g. 66)"
+          "zone_info": "Country your Haier account is registered in"
+        },
+        "data_description": {
+          "username": "Whichever you use to sign in to the Haier app.",
+          "password": "Your Haier account password — not your Home Assistant password.",
+          "zone_info": "The country you chose when you created the Haier account, which is not necessarily where the air conditioner is installed or where you live now. Home Assistant has pre-selected your configured country; change it if your account was registered elsewhere."
         }
       },
       "pick_device": {
@@ -28,13 +33,20 @@
       },
       "manual": {
         "title": "Device details",
-        "description": "Enter the AC's LAN IP, its device ID (the module's MAC), and its localKey. Device ID is prefilled if the AC was discovered.",
+        "description": "Set the AC up without signing in. You need three things, all of which you can get from a previous install's Local key sensor or a backup.",
         "data": {
           "host": "IP address",
           "device_id": "Device ID",
           "local_key": "Local key (32-char hex)",
           "name": "Name",
           "product_code": "Product code (typeId)"
+        },
+        "data_description": {
+          "host": "The air conditioner's IP address on your network, e.g. 192.168.1.50. A DHCP reservation keeps it from changing.",
+          "device_id": "The Wi-Fi module's MAC address without separators, e.g. A1B2C3D4E5F6.",
+          "local_key": "The 32-character key the AC encrypts its status with. It is issued by Haier's cloud per device — the Sign in path fetches it for you.",
+          "name": "Optional. What to call this air conditioner in Home Assistant.",
+          "product_code": "Optional. Your model's product code, shown in the Haier app's device details, e.g. AACRL2E00. Leave it alone unless you know it — it only selects a fallback used when no model description is stored."
         }
       },
       "reauth_confirm": {
@@ -42,6 +54,9 @@
         "description": "The AC {device_id} reports a newer localKey version — the cached key no longer decrypts its status. Enter the AC's current localKey to reconnect.",
         "data": {
           "local_key": "Local key (32-char hex)"
+        },
+        "data_description": {
+          "local_key": "Enable the Local key diagnostic sensor on the device page to read the current one, or re-add the AC with your Haier account to have it fetched automatically."
         }
       },
       "host": {
@@ -49,22 +64,28 @@
         "description": "Signed in and the key was fetched automatically — Home Assistant just couldn't find {device} on the network by itself. Enter its local IP address (e.g. 192.168.1.50). Tip: a DHCP reservation keeps it stable.",
         "data": {
           "host": "IP address"
+        },
+        "data_description": {
+          "host": "A DHCP reservation on your router keeps this from changing."
         }
       }
     },
     "error": {
+      "account_not_in_region": "No Haier account “{username}” was found in the country you selected (+{zone}). This is the country the account was registered in, which may not be where you live or where the AC is. Pick the right one and try again. If your AC uses the hOn or Haier China app instead, this integration cannot sign in to those at all.",
+      "missing_field": "Haier rejected the sign-in because a field was missing or empty.",
+      "cloud_auth": "Sign-in failed. Check your email or phone number and your password.",
+      "cannot_connect_cloud": "Signed in successfully, but Haier's servers could not be reached to list your devices. This is usually temporary — try again in a moment.",
       "invalid_key": "The local key must be a 32-character hex string.",
-      "invalid_auth": "The AC answered, but this local key does not decrypt its status (wrong or rotated key).",
-      "cannot_connect": "Could not complete the uSS handshake with the device on the LAN.",
-      "cloud_auth": "Sign-in failed — check your email/phone, password, and region code.",
-      "no_devices": "No devices were found on this account.",
-      "unknown": "Unexpected error."
+      "invalid_auth": "The air conditioner answered, but this local key does not decrypt its status — the key is wrong, or it has been rotated.",
+      "cannot_connect": "Could not reach the air conditioner on port 56800. Check the IP address, and that Home Assistant is on the same network."
     },
     "abort": {
       "already_configured": "This device is already configured.",
       "reauth_successful": "The local key was updated.",
       "all_configured": "All of this account's ACs are already added to Home Assistant.",
-      "unknown": "Unexpected error — the device announcement wasn't understood."
+      "unknown": "Unexpected error — the device announcement wasn't understood.",
+      "no_devices": "Signed in as {username}, but this Haier account has no devices. If you sign in to the app with Google or Facebook, share the air conditioner to this account in the app first, then try again.",
+      "already_in_progress": "This air conditioner is already being set up."
     }
   },
   "options": {
@@ -73,6 +94,9 @@
         "title": "Haismart options",
         "data": {
           "scan_interval": "Status poll interval (seconds)"
+        },
+        "data_description": {
+          "scan_interval": "How often to ask the AC for its state. Each poll is a full local session, and it exists only to notice changes made with the remote or the app — commands you send from Home Assistant update instantly regardless."
         }
       }
     }

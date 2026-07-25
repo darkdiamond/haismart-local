@@ -22,6 +22,7 @@ The zeroconf step is kept for future firmware. The **manual** menu path is the f
 from __future__ import annotations
 
 import json
+import logging
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -38,6 +39,17 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import format_mac
+from homeassistant.helpers.selector import (
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+)
 
 try:  # HA >= 2025.2
     from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
@@ -67,6 +79,7 @@ from .const import (
     MIN_SCAN_INTERVAL,
     READ_TIMEOUT,
 )
+from .countries import country_options, default_dial_code
 
 
 class CannotConnect(HomeAssistantError):
@@ -211,6 +224,24 @@ async def _async_resolve_host_arp(device_id: str) -> str | None:
     return None
 
 
+_LOGGER = logging.getLogger(__name__)
+
+
+def _login_error_for(err: Exception) -> str:
+    """Map a Haier sign-in failure to the error that names its ACTUAL cause.
+
+    ``30032`` is emitted both for an account that genuinely does not exist and for one looked up in
+    the wrong region, and the region is the only part of the form a user cannot simply re-read off
+    their password manager -- so it gets its own message rather than a generic three-way shrug.
+    """
+    text = str(err)
+    if "30032" in text:
+        return "account_not_in_region"
+    if "10001" in text:
+        return "missing_field"
+    return "cloud_auth"
+
+
 def _device_label(device: Any) -> str:
     """Label a device for the picker, flagging anything that is not an air conditioner.
 
@@ -251,37 +282,75 @@ class HaismartConfigFlow(ConfigFlow, domain=DOMAIN):
         """Sign in with your Haismart **email/phone + password**, then pick a device.
 
         Only for accounts that have a password — Google/Facebook sign-ins have none, so share the AC
-        to a throwaway email/password account and log in with that instead. The region is the
-        account's country zone (phone code, e.g. 66 Thailand, 65 Singapore); it routes the account
-        lookup. localKey is pulled locally after."""
+        to a throwaway email/password account and log in with that instead. The country selects the
+        account's dialling-code zone, which routes the account lookup. localKey is pulled locally
+        after."""
         errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {}
         if user_input is not None:
+            zone = str(user_input.get(CONF_ZONE_INFO, "")).strip().lstrip("+")
             try:
                 self._cloud, self._cloud_data = await _async_login_cloud(
-                    user_input[CONF_USERNAME],
-                    user_input[CONF_PASSWORD],
-                    user_input.get(CONF_ZONE_INFO, ""),
+                    user_input[CONF_USERNAME], user_input[CONF_PASSWORD], zone
                 )
-                self._devices = await self._cloud.list_devices_v2()
-            except CloudAuthError:
-                errors["base"] = "cloud_auth"
-            except (CloudError, OSError, RuntimeError, TimeoutError):
-                errors["base"] = "cloud_auth"
+            except CloudAuthError as err:
+                # Do not collapse every sign-in failure into "check all three fields". The region is
+                # the one the user cannot look up, and Haier reports a right-password-wrong-region
+                # attempt as 30032 "account is not registered" - which reads as "wrong password".
+                errors["base"] = _login_error_for(err)
+                placeholders = {"username": user_input[CONF_USERNAME], "zone": zone}
+            except (CloudError, OSError, RuntimeError, TimeoutError) as err:
+                # Reached only from list_devices_v2 below in the original code; kept distinct
+                # because
+                # sign-in itself already succeeded by this point.
+                _LOGGER.debug("cloud sign-in transport failure: %s", err)
+                errors["base"] = "cannot_connect_cloud"
             else:
-                if not self._devices:
-                    errors["base"] = "no_devices"
+                try:
+                    self._devices = await self._cloud.list_devices_v2()
+                except (CloudError, OSError, RuntimeError, TimeoutError) as err:
+                    # Signed in fine; the DEVICE LIST failed. Telling the user to check
+                    # credentials
+                    # that were just proven correct sends them in exactly the wrong direction.
+                    _LOGGER.warning("signed in, but the device list failed: %s", err)
+                    errors["base"] = "cannot_connect_cloud"
+                    placeholders = {"error": str(err)[:120]}
                 else:
-                    return await self.async_step_pick_device()
+                    if self._devices:
+                        return await self.async_step_pick_device()
+                    # Sign-in SUCCEEDED and the account simply has no devices. Re-showing the form
+                    # as an error invites the user to retype credentials forever and throws away the
+                    # tokens we just obtained; this is a terminal state, so abort and say why.
+                    return self.async_abort(
+                        reason="no_devices",
+                        description_placeholders={"username": user_input[CONF_USERNAME]},
+                    )
+        default_zone = default_dial_code(self.hass.config.country)
+        zone_field = (
+            vol.Required(CONF_ZONE_INFO, default=default_zone)
+            if default_zone
+            else vol.Required(CONF_ZONE_INFO)
+        )
         return self.async_show_form(
             step_id="login",
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_USERNAME): str,
-                    vol.Required(CONF_PASSWORD): str,
-                    vol.Required(CONF_ZONE_INFO, default="66"): str,
+                    vol.Required(CONF_PASSWORD): TextSelector(
+                        TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                    ),
+                    zone_field: SelectSelector(
+                        SelectSelectorConfig(
+                            options=country_options(),
+                            mode=SelectSelectorMode.DROPDOWN,
+                            # a code that is not in the list can still be typed
+                            custom_value=True,
+                        )
+                    ),
                 }
             ),
             errors=errors,
+            description_placeholders=placeholders,
         )
 
     async def async_step_pick_device(
@@ -529,7 +598,16 @@ class HaismartOptionsFlow(OptionsFlow):
                         default=self.config_entry.options.get(
                             CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
                         ),
-                    ): vol.All(vol.Coerce(int), vol.Range(min=MIN_SCAN_INTERVAL)),
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=MIN_SCAN_INTERVAL,
+                            # a bare integer box had no ceiling and no unit affordance
+                            max=600,
+                            step=5,
+                            unit_of_measurement="s",
+                            mode=NumberSelectorMode.BOX,
+                        )
+                    ),
                 }
             ),
         )
