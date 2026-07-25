@@ -65,7 +65,8 @@ async def test_setup_creates_entities_from_status(hass: HomeAssistant, mock_uss)
     assert climate.attributes["temperature"] == 24.0
     assert climate.attributes["fan_mode"] == "auto"
     assert climate.attributes["swing_mode"] == "vertical"
-    assert climate.attributes["swing_modes"] == ["off", "vertical"]
+    # both axes are independent fields on the wire but are presented as ONE conventional control
+    assert climate.attributes["swing_modes"] == ["off", "vertical", "horizontal", "both"]
     assert climate.attributes["min_temp"] == 16.0
     assert climate.attributes["max_temp"] == 30.0
     assert climate.attributes["fan_modes"] == ["high", "medium", "low", "auto"]
@@ -404,7 +405,11 @@ async def test_diagnostics_redacts_secrets(hass: HomeAssistant, mock_uss) -> Non
     diag = await async_get_config_entry_diagnostics(hass, entry)
 
     assert diag["entry"][CONF_LOCAL_KEY] == "**REDACTED**"
-    assert diag["entry"][CONF_DEVICE_ID] == "**REDACTED**"
+    # The deviceId is NOT redacted: it is just the Wi-Fi MAC, it is not a credential, and it is
+    # needed to interpret a status capture. What must never appear is the account credentials -
+    # `refresh_token` in particular is durable and reusable, so leaking it in the file users are
+    # told to attach to issues would hand over the whole Haier account.
+    assert diag["entry"][CONF_DEVICE_ID] == "A1B2C3D4E5F6"
     assert diag["localkey_version"] == 4
     assert diag["state"]["mode"] == "cool"
     assert diag["profile"]["product_code"] == "AAC1UKZ01"
@@ -630,3 +635,39 @@ async def test_localkey_backup_sensor_exposes_key_when_enabled(
     assert st.attributes["device_id"] == "A1B2C3D4E5F6"
     assert st.attributes[CONF_HOST] == "192.168.1.50"
     assert st.attributes[CONF_LOCALKEY_VERSION] == 4
+
+
+async def test_diagnostics_redacts_cloud_credentials(hass: HomeAssistant, mock_uss) -> None:
+    """An entry WITH cloud credentials must not leak them.
+
+    The pre-existing redaction test used a fixture with no tokens at all, so it could not observe
+    that `refresh_token`, `access_token` and `cloud_client_id` were being published in full - in the
+    very artefact users are told to attach to GitHub issues. `refresh_token` is durable and
+    reusable, so leaking it hands over the whole Haier account.
+    """
+    import json as _json
+
+    from custom_components.haismart.const import (
+        CONF_ACCESS_TOKEN,
+        CONF_CLOUD_CLIENT_ID,
+        CONF_REFRESH_TOKEN,
+    )
+    from custom_components.haismart.diagnostics import (
+        async_get_config_entry_diagnostics,
+    )
+
+    secrets = {
+        CONF_REFRESH_TOKEN: "refresh-token-do-not-leak",
+        CONF_ACCESS_TOKEN: "access-token-do-not-leak",
+        CONF_CLOUD_CLIENT_ID: "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4",
+    }
+    entry = _entry(**secrets)
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    diag = await async_get_config_entry_diagnostics(hass, entry)
+    dumped = _json.dumps(diag)
+    for key, value in secrets.items():
+        assert diag["entry"][key] == "**REDACTED**", f"{key} was not redacted"
+        assert value not in dumped, f"{value!r} leaked elsewhere in the diagnostics"
