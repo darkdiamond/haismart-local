@@ -367,6 +367,47 @@ async def test_localkey_rotation_auto_refreshes_via_gateway(
     ) is None
 
 
+async def test_token_refresh_uses_has_shared_http_client(
+    hass: HomeAssistant, mock_uss, freezer
+) -> None:
+    """Regression (#2): minting an access token from the stored refreshToken must go through HA's
+    shared httpx client. Letting the cloud library build its own client loads the CA bundle from
+    disk on the event loop, which HA reports as a blocking call."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    from haismart_extractor import LocalKey
+
+    entry = _entry(
+        cloud_client_id="A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4",
+        refresh_token="2_RT",          # -> the token-refresh branch runs
+    )
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    mock_uss.read.return_value = []
+    mock_uss.read.side_effect = None
+    mock_uss.probe.return_value = 5  # AC rotated -> triggers the cloud refresh path
+
+    def _refresh(_creds, _device_id, **_kw):
+        mock_uss.read.return_value = [mock_uss.frame]
+        return LocalKey(key="ffeeddccbbaa99887766554433221100", version=5)
+
+    with patch(
+        "custom_components.haismart.coordinator.get_localkey_via_gateway", side_effect=_refresh
+    ), patch("custom_components.haismart.coordinator.HaierCloud") as cloud_cls:
+        cloud_cls.return_value.refresh_token = AsyncMock(
+            return_value=SimpleNamespace(access_token="tok-new")
+        )
+        await _tick(hass, freezer)  # miss 1
+        await _tick(hass, freezer)  # miss 2 -> probe, rotation, cloud token refresh
+        await hass.async_block_till_done()
+
+    assert cloud_cls.call_args is not None
+    assert cloud_cls.call_args.kwargs["transport"] is not None
+
+
 async def test_gateway_refresh_failure_falls_back_to_reauth(
     hass: HomeAssistant, mock_uss, freezer
 ) -> None:
@@ -756,3 +797,44 @@ async def test_control_errors_are_translated_and_name_the_device(
     message = str(err.value)
     assert entry.title in message, "the message should say WHICH air conditioner"
     assert "No route to host" in message, "the underlying cause is still worth keeping"
+
+
+async def test_undecodable_frames_are_debug_logged(
+    hass: HomeAssistant, mock_uss, freezer, caplog
+) -> None:
+    """A read that decrypts but doesn't decode must log the frame, so the report is actionable:
+    the localKey is fine and what the AC pushed simply isn't a status report.
+
+    An unrecognised report *length* is a different case entirely here — it decodes partially and
+    raises a repair (see `test_unknown_report_layout_degrades_and_reports`), so it never reaches
+    this log.
+    """
+    await _setup(hass)
+    caplog.set_level("DEBUG", logger="custom_components.haismart.coordinator")
+    caplog.clear()
+
+    # decrypts fine (it came back from async_read_status) but isn't a full-status report
+    mock_uss.read.return_value = [bytes.fromhex("00002799") + bytes(60)]
+    await _tick(hass, freezer)
+
+    assert "localKey is good" in caplog.text
+    assert "unrecognised frame" in caplog.text
+    assert "len=64 00002799" in caplog.text  # length + the frame itself, for offset work
+
+
+async def test_nothing_decrypted_is_debug_logged_as_key_or_silence(
+    hass: HomeAssistant, mock_uss, freezer, caplog
+) -> None:
+    """The other half: no payloads at all means the AC pushed nothing OR the key is wrong/stale
+    (a failed MD5 check is dropped silently), and the log has to say so — they're indistinguishable
+    here but need opposite fixes."""
+    await _setup(hass)
+    caplog.set_level("DEBUG", logger="custom_components.haismart.coordinator")
+    caplog.clear()
+
+    mock_uss.read.return_value = []
+    await _tick(hass, freezer)
+
+    assert "nothing decrypted this cycle" in caplog.text
+    assert "wrong/stale key" in caplog.text
+    assert "localKey v4" in caplog.text  # the stored version, for comparing against the AC's

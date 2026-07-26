@@ -170,6 +170,27 @@ as the guaranteed floor, flash **ESPHome** onto the module.
   Otherwise it is a **stale `localKey`** — it
   rotates server-side. The login/cloud paths auto-refetch it; the manual path will prompt a reauth (and raise
   a repair suggesting you add account creds so it self-heals next time).
+
+  If it persists, turn on debug logging for the integration:
+
+  ```yaml
+  # configuration.yaml
+  logger:
+    logs:
+      custom_components.haismart: debug
+  ```
+
+  Each failed cycle then logs which cause it is — the wording tells them apart:
+
+  | Log says | Means |
+  |---|---|
+  | `nothing decrypted this cycle` | the key is wrong/stale, **or** the AC pushed no status at all |
+  | `localKey is good … unrecognised frame` | the key is fine, but what the AC pushed isn't a status report (no `2715` signature, or too short) |
+
+  Note an unrecognised report **length** does not appear here at all: that case decodes partially and
+  raises the repair notification described above, so it is already named for you. Either way the log
+  line includes the frame — please open an issue with it if the entity stays unavailable. It carries
+  device state only, no key.
 - **Can't reach the AC.** Confirm HA and the AC are on the same subnet and `:56800` is open:
   `nc -z <ac-ip> 56800`. The integration finds the AC by **DHCP** (matching Haier's appliance MAC
   prefixes) or the host you

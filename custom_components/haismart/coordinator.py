@@ -51,6 +51,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from .cloud_transport import async_cloud_transport
 from .const import (
     CONF_ACCESS_TOKEN,
     CONF_CLOUD_CLIENT_ID,
@@ -82,6 +83,11 @@ type HaismartConfigEntry = ConfigEntry["HaismartCoordinator"]
 
 # Empty read cycles tolerated before probing the AC's localKey version for rotation.
 _MISSES_BEFORE_PROBE = 2
+
+# Caps on the undecodable-frame debug log (the known reports are 125/127 bytes, so this keeps whole
+# frames while bounding the damage if some other device pushes something large).
+_LOG_FRAME_BYTES = 192
+_LOG_FRAME_MAX = 3
 
 
 # A control op carries raw EPP values; the digital model describes each attribute in STD values.
@@ -195,6 +201,7 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Connected fine but nothing decoded — either the AC pushed no full report this
         # cycle (transient) or every biz payload failed the MD5 check (stale localKey).
+        self._log_undecodable(blobs)
         self._misses += 1
         # capture BEFORE the probe below resets it, or the message always reports 0
         misses = self._misses
@@ -242,6 +249,48 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
         self.unknown_layout = None
         ir.async_delete_issue(self.hass, DOMAIN, f"{ISSUE_UNKNOWN_LAYOUT}_{self.device_id}")
+
+    def _log_undecodable(self, blobs: list[bytes]) -> None:
+        """Debug-log what the AC actually sent when no status decoded — the report discriminator.
+
+        ``async_read_status`` returns only payloads that decrypted (a failed biz MD5 check is
+        dropped silently), so the two cases look identical from the outside but mean opposite
+        things:
+
+        * **no payloads** — the AC pushed nothing this cycle, OR every payload failed the MD5 check,
+          i.e. the localKey is wrong/stale (the consecutive-miss probe below checks for rotation);
+        * **payloads present** — the localKey is GOOD and nothing the AC sent was a full-status
+          report at all: a frame without the ``2715`` signature, or one too short for even the
+          layout-independent fields.
+
+        Note an unrecognised report *length* does NOT reach here: ``parse_full_status`` decodes
+        those partially and :meth:`_note_unknown_layout` raises a repair, so a new model is already
+        diagnosed by name. What lands here is whatever else the AC is pushing, hence logging the
+        frames in full — they are the only way to identify it.
+
+        Report bytes carry device state only, no key material (the same bytes diagnostics exports).
+        """
+        if not blobs:
+            _LOGGER.debug(
+                "%s: handshake OK but nothing decrypted this cycle (stored localKey v%s) — either "
+                "the AC pushed no status, or every payload failed the biz MD5 check "
+                "(wrong/stale key)",
+                self.device_id,
+                self.localkey_version,
+            )
+            return
+        _LOGGER.debug(
+            "%s: localKey is good (%d payload(s) decrypted) but no full-status report decoded — "
+            "unrecognised frame (no 2715 signature, or shorter than the attribute vector). "
+            "Frames: %s",
+            self.device_id,
+            len(blobs),
+            "; ".join(
+                f"len={len(b)} {b[:_LOG_FRAME_BYTES].hex()}"
+                f"{'…' if len(b) > _LOG_FRAME_BYTES else ''}"
+                for b in blobs[:_LOG_FRAME_MAX]
+            ),
+        )
 
     async def async_send_control(self, changes: dict[str, int]) -> None:
         """Apply ``{field_name: raw_epp_value}`` to the state and send it as one grSetDAC op.
@@ -464,6 +513,8 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     replace(SEA_APP_CREDENTIALS, client_id=usdk_client_id),
                     access_token or "",
                     zone_info=data.get(CONF_ZONE_INFO, "0"),
+                    # HA's shared httpx client: building one here would block the loop (CA bundle)
+                    transport=async_cloud_transport(self.hass),
                 )
                 access_token = (await cloud.refresh_token(refresh_token)).access_token
             except (CloudError, OSError, RuntimeError) as err:
