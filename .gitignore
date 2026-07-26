@@ -11,6 +11,9 @@ venv/
 # Local secrets — NEVER commit
 *.local.json
 haismart_keys_backup.json
+# private working notes; CLAUDE.private.md carries home-network addresses and device IDs
+CLAUDE.md
+CLAUDE.private.md
 
 # Editor / OS
 .vscode/
