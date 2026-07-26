@@ -31,11 +31,13 @@ from haismart_extractor import (
 )
 from haismart_extractor.cloud import SEA_APP_CREDENTIALS, CloudError
 from haismart_hrdp import (
+    GRSETDAC_MODEL_AUTHORIZED,
     AttributeProfile,
     async_read_status,
     async_send_op,
     grsetdac_baseline_from_status,
     grsetdac_op_frame,
+    model_enum_codes,
     parse_full_status,
     probe_localkey_version,
     profile_for,
@@ -124,6 +126,21 @@ def _load_digital_model(entry: HaismartConfigEntry) -> dict[str, Any] | None:
     return model if isinstance(model, dict) and model.get("attributes") else None
 
 
+def _model_authorized_codes(model: dict[str, Any] | None) -> dict[str, set[int]]:
+    """Per-field raw codes this device's own digital model declares, for the enum fields the encoder
+    lets the model authorize (``operationMode``/``windSpeed``).
+
+    This is how a capability the reference unit doesn't have reaches the wire: heat mode is absent
+    from the encoder's observed-value allowlist (our hardware is cooling-only), so a heat-pump AC's
+    own published model is what authorizes its heat code — not a guessed constant. Empty when no
+    model is stored (manual onboarding), which leaves the observed allowlist as the only authority.
+    """
+    if model is None:
+        return {}
+    codes = {name: model_enum_codes(model, name) for name in GRSETDAC_MODEL_AUTHORIZED}
+    return {name: values for name, values in codes.items() if values}
+
+
 def _build_profile(
     entry: HaismartConfigEntry, product_code: str, model: dict[str, Any] | None
 ) -> AttributeProfile:
@@ -151,6 +168,7 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.profile: AttributeProfile = _build_profile(
             entry, self.product_code, self.digital_model
         )
+        self.model_codes: dict[str, set[int]] = _model_authorized_codes(self.digital_model)
         self.localkey_version: int | None = entry.data.get(CONF_LOCALKEY_VERSION)
         self.last_raw_status: bytes | None = None
         self._misses = 0
@@ -218,7 +236,9 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.last_raw_status = baseline
             words = grsetdac_baseline_from_status(base)
             for name, value in changes.items():
-                words = set_grsetdac_field(words, name, value)
+                words = set_grsetdac_field(
+                    words, name, value, model_values=self.model_codes.get(name)
+                )
             return grsetdac_op_frame(words)
 
         try:

@@ -7,7 +7,9 @@ no cloud at runtime.
 ## Features
 
 Per AC:
-- **Climate** — target temperature, HVAC mode (cool / dry / fan-only / auto), fan speed, swing, on/off.
+- **Climate** — target temperature, HVAC mode (cool / dry / fan-only / auto, plus heat on units that
+  support it), fan speed, swing, on/off. The modes offered are the ones your unit's own digital model
+  declares, so a heat-pump AC gets Heat and a cooling-only one doesn't.
 - **Switches** — strong, quiet, health, sleep, display light.
 - **Eco** select.
 - **Indoor / outdoor temperature** sensors.

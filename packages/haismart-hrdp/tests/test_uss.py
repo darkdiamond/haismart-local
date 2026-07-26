@@ -315,6 +315,32 @@ def test_set_grsetdac_field_refuses_unobserved_values():
         uss.set_grsetdac_field(words, "targetTemperature", 20)  # 20 -> 36 degC, out of 16..30 range
 
 
+# --- values authorized by the DEVICE's own digital model (heat on a heat-pump unit) ---------------
+# Our reference units are cooling-only, so heat (operationMode 4) is not in the observed allowlist.
+# A device whose model declares the code may use it; a device that doesn't, may not.
+def test_model_declared_mode_is_encodable_but_not_by_default():
+    auto = bytes.fromhex("0800050002030007080c0000")            # operationMode = 0 (auto)
+    with pytest.raises(ValueError):
+        uss.set_grsetdac_field(auto, "operationMode", 4)        # unauthorized: no model says so
+    heat = uss.set_grsetdac_field(auto, "operationMode", 4, model_values={0, 1, 2, 4, 6})
+    assert heat == bytes.fromhex("0800850002030007080c0000")     # mode bits (word2 b13) = 4
+    # everything else in the group-set is untouched
+    assert uss.set_grsetdac_field(heat, "operationMode", 0, model_values={0, 4}) == auto
+
+
+def test_model_values_cannot_widen_device_specific_fields_or_overflow():
+    words = bytes.fromhex("0800230002030007080c0000")
+    # windDirectionVertical/ecoMode have no matching model attribute (this unit repurposes them), so
+    # the model is not allowed to authorize values for them — the observed set stays the authority.
+    with pytest.raises(ValueError):
+        uss.set_grsetdac_field(words, "windDirectionVertical", 8, model_values={0, 8})
+    with pytest.raises(ValueError):
+        uss.set_grsetdac_field(words, "ecoMode", 1, model_values={0, 1})
+    # a code that doesn't fit the field would silently corrupt neighbouring attributes
+    with pytest.raises(ValueError):
+        uss.set_grsetdac_field(words, "operationMode", 8, model_values={8})
+
+
 # --- control (grSetDAC) baseline + field read/write pipeline (HA layer building blocks) -------------
 def test_grsetdac_baseline_extracted_from_real_report():
     base = uss.grsetdac_baseline_from_status(REAL_STATUS_DOWN)

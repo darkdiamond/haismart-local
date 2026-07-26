@@ -1,11 +1,14 @@
 """Entry setup, coordinator read cycle, entity state, and localKey-rotation reauth."""
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 
-from conftest import make_status_frame
+import pytest
+from conftest import heat_capable_digital_model, make_status_frame
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_time_changed,
@@ -142,6 +145,47 @@ async def test_fan_only_mode_substitutes_concrete_fan(hass: HomeAssistant, mock_
     assert _sent_field(mock_uss.send, "operationMode") == 6   # fan_only
     assert _sent_field(mock_uss.send, "onOffStatus") == 1
     assert _sent_field(mock_uss.send, "windSpeed") == 2       # medium substituted, NOT auto(5)
+
+
+async def test_heat_mode_offered_and_sent_when_the_model_declares_it(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """Heat works on a unit whose digital model declares it (issue #1).
+
+    Our reference hardware is cooling-only, so heat is deliberately absent from the encoder's
+    observed-value allowlist. A heat-pump AC's own model declares operationMode 4, and that is what
+    authorizes both the entity offering HEAT and the group-set carrying it.
+    """
+    mock_uss.read.return_value = [make_status_frame(mode_code=4)]  # AC reports it's heating
+    entry = _entry(digital_model=json.dumps(heat_capable_digital_model()))
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    climate = hass.states.get(CLIMATE)
+    assert climate.attributes["hvac_modes"] == [
+        "off", "auto", "cool", "dry", "heat", "fan_only",
+    ]
+    assert climate.state == "heat"  # the report's mode code decodes back to heat
+
+    mock_uss.send.baseline = make_status_frame(mode_code=1)  # currently cooling
+    await hass.services.async_call(
+        "climate", "set_hvac_mode", {"entity_id": CLIMATE, "hvac_mode": "heat"}, blocking=True
+    )
+    assert _sent_field(mock_uss.send, "operationMode") == 4  # the model's own heat code
+    assert _sent_field(mock_uss.send, "onOffStatus") == 1
+
+
+async def test_heat_refused_on_a_unit_that_does_not_declare_it(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """The flip side of the guard: with no model declaring heat (cooling-only / manual onboarding),
+    the encoder still refuses the code rather than firing an unauthorized value at the AC."""
+    entry = await _setup(hass)  # no digital model stored
+    assert "heat" not in hass.states.get(CLIMATE).attributes["hvac_modes"]
+    with pytest.raises(HomeAssistantError):
+        await entry.runtime_data.async_send_control({"operationMode": 4})
+    assert mock_uss.send.last_frame is None  # the op frame was never even encoded
 
 
 async def test_set_swing_mode_sends_toggle(hass: HomeAssistant, mock_uss) -> None:

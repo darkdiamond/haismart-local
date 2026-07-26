@@ -44,19 +44,35 @@ AAC1UKZ01 = AttributeProfile(
 )
 
 # Map the model's Chinese value descriptions -> our normalized tokens (keyword match, longest first).
+# English keywords too: descriptions are Haier's and are not guaranteed to be Chinese on every model.
 _MODE_KEYWORDS = (("制冷", "cool"), ("制热", "heat"), ("除湿", "dry"), ("送风", "fan_only"),
-                  ("通风", "fan_only"), ("智能", "auto"), ("自动", "auto"), ("舒适", "auto"))
-_FAN_KEYWORDS = (("高", "high"), ("中", "medium"), ("低", "low"), ("自动", "auto"))
+                  ("通风", "fan_only"), ("智能", "auto"), ("自动", "auto"), ("舒适", "auto"),
+                  ("cool", "cool"), ("heat", "heat"), ("dehumid", "dry"), ("dry", "dry"),
+                  ("fan", "fan_only"), ("wind", "fan_only"), ("smart", "auto"),
+                  ("auto", "auto"), ("comfort", "auto"))
+_FAN_KEYWORDS = (("高", "high"), ("中", "medium"), ("低", "low"), ("自动", "auto"),
+                 ("high", "high"), ("medium", "medium"), ("middle", "medium"), ("low", "low"),
+                 ("auto", "auto"))
+
+# Fallback for a mode whose description matches no keyword at all (unexpected wording/language):
+# the STD operationMode codes are stable across the split-AC family — this is the app's own mode
+# table (0 smart / 1 cool / 2 dry / 4 heat / 6 fan). Only used when the keyword match fails, so a
+# model that spells its modes out normally still wins.
+_STD_MODE_CODES = {"0": "auto", "1": "cool", "2": "dry", "4": "heat", "6": "fan_only"}
 
 
-def _enum_from_datalist(data_list, keywords) -> dict[str, str]:
+def _enum_from_datalist(data_list, keywords, code_fallback=None) -> dict[str, str]:
     out: dict[str, str] = {}
     for item in data_list or []:
-        desc = item.get("desc") or ""
+        desc = (item.get("desc") or "").lower()
+        code = str(item.get("data"))
         for kw, tok in keywords:
             if kw in desc:
-                out[str(item.get("data"))] = tok
+                out[code] = tok
                 break
+        else:
+            if code_fallback and code in code_fallback:
+                out[code] = code_fallback[code]
     return out
 
 
@@ -83,7 +99,7 @@ def profile_from_device_config(config: dict) -> AttributeProfile:
 
     mn, mx, step = step_bounds("targetTemperature", 16.0, 30.0, 1.0)
     return AttributeProfile(
-        mode_values=_enum_from_datalist(datalist("operationMode"), _MODE_KEYWORDS)
+        mode_values=_enum_from_datalist(datalist("operationMode"), _MODE_KEYWORDS, _STD_MODE_CODES)
         or dict(AttributeProfile().mode_values),
         fan_values=_enum_from_datalist(datalist("windSpeed"), _FAN_KEYWORDS)
         or dict(AttributeProfile().fan_values),
@@ -96,6 +112,27 @@ def profile_from_device_config(config: dict) -> AttributeProfile:
 def writable_attributes(config: dict) -> dict[str, dict]:
     """Map of attribute name -> its model spec, for attributes the model marks ``writable``."""
     return {a["name"]: a for a in config.get("attributes", []) if a.get("writable")}
+
+
+def model_enum_codes(config: dict, name: str) -> set[int]:
+    """The numeric codes attribute ``name`` declares in its model ``valueRange`` LIST.
+
+    This is the device's OWN statement of which values it supports, so it is what authorizes a
+    capability our hardware doesn't have (heat mode, an extra fan speed) instead of a guessed
+    constant — it feeds ``set_grsetdac_field(..., model_values=...)``. Non-numeric enums (the
+    ``'false'``/``'true'`` bools) and unlisted/absent attributes yield an empty set.
+    """
+    spec = next((a for a in config.get("attributes", []) if a.get("name") == name), None)
+    vr = (spec or {}).get("valueRange") or {}
+    if vr.get("type") != "LIST":
+        return set()
+    codes: set[int] = set()
+    for item in vr.get("dataList") or []:
+        try:
+            codes.add(int(str(item.get("data"))))
+        except (TypeError, ValueError):
+            continue
+    return codes
 
 
 def validate_write(
