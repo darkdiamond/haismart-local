@@ -180,15 +180,17 @@ as the guaranteed floor, flash **ESPHome** onto the module.
       custom_components.haismart: debug
   ```
 
-  Each failed cycle then logs which of the three causes it is — the wording tells them apart:
+  Each failed cycle then logs which cause it is — the wording tells them apart:
 
   | Log says | Means |
   |---|---|
   | `nothing decrypted this cycle` | the key is wrong/stale, **or** the AC pushed no status at all |
-  | `localKey is good … unrecognised report layout` | the key is fine; your unit reports in a layout this integration doesn't decode yet (a model we haven't seen) |
+  | `localKey is good … unrecognised frame` | the key is fine, but what the AC pushed isn't a status report (no `2715` signature, or too short) |
 
-  The second one is a **supportable gap, not a misconfiguration** — please open an issue with that log line
-  (it includes the frame, which is what adding your model needs). It carries device state only, no key.
+  Note an unrecognised report **length** does not appear here at all: that case decodes partially and
+  raises the repair notification described above, so it is already named for you. Either way the log
+  line includes the frame — please open an issue with it if the entity stays unavailable. It carries
+  device state only, no key.
 - **Can't reach the AC.** Confirm HA and the AC are on the same subnet and `:56800` is open:
   `nc -z <ac-ip> 56800`. The integration finds the AC by **DHCP** (matching Haier's appliance MAC
   prefixes) or the host you

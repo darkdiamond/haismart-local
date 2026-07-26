@@ -262,8 +262,8 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
           report at all: a frame without the ``2715`` signature, or one too short for even the
           layout-independent fields.
 
-        Note an unrecognised report *length* does NOT reach here: ``parse_full_status`` decodes those
-        partially and :meth:`_note_unknown_layout` raises a repair, so a new model is already
+        Note an unrecognised report *length* does NOT reach here: ``parse_full_status`` decodes
+        those partially and :meth:`_note_unknown_layout` raises a repair, so a new model is already
         diagnosed by name. What lands here is whatever else the AC is pushing, hence logging the
         frames in full — they are the only way to identify it.
 
