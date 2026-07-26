@@ -756,3 +756,44 @@ async def test_control_errors_are_translated_and_name_the_device(
     message = str(err.value)
     assert entry.title in message, "the message should say WHICH air conditioner"
     assert "No route to host" in message, "the underlying cause is still worth keeping"
+
+
+async def test_undecodable_frames_are_debug_logged(
+    hass: HomeAssistant, mock_uss, freezer, caplog
+) -> None:
+    """A read that decrypts but doesn't decode must log the frame, so the report is actionable:
+    the localKey is fine and what the AC pushed simply isn't a status report.
+
+    An unrecognised report *length* is a different case entirely here — it decodes partially and
+    raises a repair (see `test_unknown_report_layout_degrades_and_reports`), so it never reaches
+    this log.
+    """
+    await _setup(hass)
+    caplog.set_level("DEBUG", logger="custom_components.haismart.coordinator")
+    caplog.clear()
+
+    # decrypts fine (it came back from async_read_status) but isn't a full-status report
+    mock_uss.read.return_value = [bytes.fromhex("00002799") + bytes(60)]
+    await _tick(hass, freezer)
+
+    assert "localKey is good" in caplog.text
+    assert "unrecognised frame" in caplog.text
+    assert "len=64 00002799" in caplog.text  # length + the frame itself, for offset work
+
+
+async def test_nothing_decrypted_is_debug_logged_as_key_or_silence(
+    hass: HomeAssistant, mock_uss, freezer, caplog
+) -> None:
+    """The other half: no payloads at all means the AC pushed nothing OR the key is wrong/stale
+    (a failed MD5 check is dropped silently), and the log has to say so — they're indistinguishable
+    here but need opposite fixes."""
+    await _setup(hass)
+    caplog.set_level("DEBUG", logger="custom_components.haismart.coordinator")
+    caplog.clear()
+
+    mock_uss.read.return_value = []
+    await _tick(hass, freezer)
+
+    assert "nothing decrypted this cycle" in caplog.text
+    assert "wrong/stale key" in caplog.text
+    assert "localKey v4" in caplog.text  # the stored version, for comparing against the AC's
