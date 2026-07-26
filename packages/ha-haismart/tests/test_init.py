@@ -367,6 +367,47 @@ async def test_localkey_rotation_auto_refreshes_via_gateway(
     ) is None
 
 
+async def test_token_refresh_uses_has_shared_http_client(
+    hass: HomeAssistant, mock_uss, freezer
+) -> None:
+    """Regression (#2): minting an access token from the stored refreshToken must go through HA's
+    shared httpx client. Letting the cloud library build its own client loads the CA bundle from
+    disk on the event loop, which HA reports as a blocking call."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    from haismart_extractor import LocalKey
+
+    entry = _entry(
+        cloud_client_id="A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4",
+        refresh_token="2_RT",          # -> the token-refresh branch runs
+    )
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    mock_uss.read.return_value = []
+    mock_uss.read.side_effect = None
+    mock_uss.probe.return_value = 5  # AC rotated -> triggers the cloud refresh path
+
+    def _refresh(_creds, _device_id, **_kw):
+        mock_uss.read.return_value = [mock_uss.frame]
+        return LocalKey(key="ffeeddccbbaa99887766554433221100", version=5)
+
+    with patch(
+        "custom_components.haismart.coordinator.get_localkey_via_gateway", side_effect=_refresh
+    ), patch("custom_components.haismart.coordinator.HaierCloud") as cloud_cls:
+        cloud_cls.return_value.refresh_token = AsyncMock(
+            return_value=SimpleNamespace(access_token="tok-new")
+        )
+        await _tick(hass, freezer)  # miss 1
+        await _tick(hass, freezer)  # miss 2 -> probe, rotation, cloud token refresh
+        await hass.async_block_till_done()
+
+    assert cloud_cls.call_args is not None
+    assert cloud_cls.call_args.kwargs["transport"] is not None
+
+
 async def test_gateway_refresh_failure_falls_back_to_reauth(
     hass: HomeAssistant, mock_uss, freezer
 ) -> None:

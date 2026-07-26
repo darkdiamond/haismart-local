@@ -51,6 +51,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from .cloud_transport import async_cloud_transport
 from .const import (
     CONF_ACCESS_TOKEN,
     CONF_CLOUD_CLIENT_ID,
@@ -512,6 +513,8 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     replace(SEA_APP_CREDENTIALS, client_id=usdk_client_id),
                     access_token or "",
                     zone_info=data.get(CONF_ZONE_INFO, "0"),
+                    # HA's shared httpx client: building one here would block the loop (CA bundle)
+                    transport=async_cloud_transport(self.hass),
                 )
                 access_token = (await cloud.refresh_token(refresh_token)).access_token
             except (CloudError, OSError, RuntimeError) as err:
