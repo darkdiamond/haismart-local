@@ -163,6 +163,25 @@ as the guaranteed floor, flash **ESPHome** onto the module.
 - **"No decodable status" / entities unavailable right after adding.** Usually a **stale `localKey`** — it
   rotates server-side. The login/cloud paths auto-refetch it; the manual path will prompt a reauth (and raise
   a repair suggesting you add account creds so it self-heals next time).
+
+  If it persists, turn on debug logging for the integration:
+
+  ```yaml
+  # configuration.yaml
+  logger:
+    logs:
+      custom_components.haismart: debug
+  ```
+
+  Each failed cycle then logs which of the three causes it is — the wording tells them apart:
+
+  | Log says | Means |
+  |---|---|
+  | `nothing decrypted this cycle` | the key is wrong/stale, **or** the AC pushed no status at all |
+  | `localKey is good … unrecognised report layout` | the key is fine; your unit reports in a layout this integration doesn't decode yet (a model we haven't seen) |
+
+  The second one is a **supportable gap, not a misconfiguration** — please open an issue with that log line
+  (it includes the frame, which is what adding your model needs). It carries device state only, no key.
 - **Can't reach the AC.** Confirm HA and the AC are on the same subnet and `:56800` is open:
   `nc -z <ac-ip> 56800`. The integration finds the AC by **DHCP** (its MAC starts `AC:B7:22`) or the host you
   provide; if you blocked the AC's WAN (§4), make sure you left its **LAN** open.
