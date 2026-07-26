@@ -81,6 +81,11 @@ type HaismartConfigEntry = ConfigEntry["HaismartCoordinator"]
 # Empty read cycles tolerated before probing the AC's localKey version for rotation.
 _MISSES_BEFORE_PROBE = 2
 
+# Caps on the undecodable-frame debug log (a full report is 127 bytes, so this keeps whole frames
+# while bounding the damage if some other device pushes something large).
+_LOG_FRAME_BYTES = 192
+_LOG_FRAME_MAX = 3
+
 
 # A control op carries raw EPP values; the digital model describes each attribute in STD values.
 # For fields that map 1:1 to a model attribute (same STD name), this converts the EPP value so
@@ -180,6 +185,7 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Connected fine but nothing decoded — either the AC pushed no full report this
         # cycle (transient) or every biz payload failed the MD5 check (stale localKey).
+        self._log_undecodable(blobs)
         self._misses += 1
         if self._misses >= _MISSES_BEFORE_PROBE:
             # probe once at the threshold; if the key still matches it's a transient miss, so
@@ -188,6 +194,42 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._misses = 0
         raise UpdateFailed(
             f"no decodable status from {self.host} ({self._misses} consecutive misses)"
+        )
+
+    def _log_undecodable(self, blobs: list[bytes]) -> None:
+        """Debug-log what the AC actually sent when no status decoded — the report discriminator.
+
+        ``async_read_status`` returns only payloads that decrypted (a failed biz MD5 check is
+        dropped silently), so the two cases look identical from the outside but mean opposite
+        things:
+
+        * **no payloads** — the AC pushed nothing this cycle, OR every payload failed the MD5 check,
+          i.e. the localKey is wrong/stale (the consecutive-miss probe below checks for rotation);
+        * **payloads present** — the localKey is GOOD and the report just isn't a layout
+          ``parse_full_status`` accepts, i.e. a model whose report differs from the verified one.
+          The frame is exactly what's needed to add support, so it's logged in full.
+
+        Report bytes carry device state only, no key material (the same bytes diagnostics exports).
+        """
+        if not blobs:
+            _LOGGER.debug(
+                "%s: handshake OK but nothing decrypted this cycle (stored localKey v%s) — either "
+                "the AC pushed no status, or every payload failed the biz MD5 check "
+                "(wrong/stale key)",
+                self.device_id,
+                self.localkey_version,
+            )
+            return
+        _LOGGER.debug(
+            "%s: localKey is good (%d payload(s) decrypted) but no full-status report decoded — "
+            "unrecognised report layout. Frames: %s",
+            self.device_id,
+            len(blobs),
+            "; ".join(
+                f"len={len(b)} {b[:_LOG_FRAME_BYTES].hex()}"
+                f"{'…' if len(b) > _LOG_FRAME_BYTES else ''}"
+                for b in blobs[:_LOG_FRAME_MAX]
+            ),
         )
 
     async def async_send_control(self, changes: dict[str, int]) -> None:

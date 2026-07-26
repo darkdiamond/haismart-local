@@ -630,3 +630,39 @@ async def test_localkey_backup_sensor_exposes_key_when_enabled(
     assert st.attributes["device_id"] == "A1B2C3D4E5F6"
     assert st.attributes[CONF_HOST] == "192.168.1.50"
     assert st.attributes[CONF_LOCALKEY_VERSION] == 4
+
+
+async def test_undecodable_frames_are_debug_logged(
+    hass: HomeAssistant, mock_uss, freezer, caplog
+) -> None:
+    """A read that decrypts but doesn't decode must log the frame, so a bug report from an
+    unsupported model is actionable: the localKey is fine and only the layout is unknown."""
+    await _setup(hass)
+    caplog.set_level("DEBUG", logger="custom_components.haismart.coordinator")
+    caplog.clear()
+
+    # decrypts fine (it came back from async_read_status) but isn't a full-status report
+    mock_uss.read.return_value = [bytes.fromhex("00002799") + bytes(60)]
+    await _tick(hass, freezer)
+
+    assert "localKey is good" in caplog.text
+    assert "unrecognised report layout" in caplog.text
+    assert "len=64 00002799" in caplog.text  # length + the frame itself, for offset work
+
+
+async def test_nothing_decrypted_is_debug_logged_as_key_or_silence(
+    hass: HomeAssistant, mock_uss, freezer, caplog
+) -> None:
+    """The other half: no payloads at all means the AC pushed nothing OR the key is wrong/stale
+    (a failed MD5 check is dropped silently), and the log has to say so — they're indistinguishable
+    here but need opposite fixes."""
+    await _setup(hass)
+    caplog.set_level("DEBUG", logger="custom_components.haismart.coordinator")
+    caplog.clear()
+
+    mock_uss.read.return_value = []
+    await _tick(hass, freezer)
+
+    assert "nothing decrypted this cycle" in caplog.text
+    assert "wrong/stale key" in caplog.text
+    assert "localKey v4" in caplog.text  # the stored version, for comparing against the AC's
