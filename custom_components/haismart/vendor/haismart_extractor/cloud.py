@@ -19,14 +19,17 @@ transport); at runtime it uses httpx.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
 import os
 import secrets
 import time
+import weakref
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
+from typing import Any
 from urllib.parse import urlsplit
 
 from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
@@ -280,16 +283,57 @@ class Response:
 Transport = Callable[[Request], Awaitable[Response]]
 
 
-async def _httpx_transport(req: Request) -> Response:  # pragma: no cover - needs network + httpx
+HTTP_TIMEOUT = 15.0
+
+# One shared httpx client per event loop. Constructing a client loads the CA bundle from DISK, which
+# blocks — Home Assistant flags exactly that ("blocking call to load_verify_locations inside the event
+# loop"), so the client is built in a worker thread and then reused instead of per request. Hosts that
+# already own a client should inject it with :func:`httpx_transport` and skip this entirely.
+_CLIENTS: "weakref.WeakKeyDictionary[Any, Any]" = weakref.WeakKeyDictionary()
+_CLIENTS_LOCK = asyncio.Lock()
+
+
+def httpx_transport(client: Any) -> Transport:
+    """Wrap an existing ``httpx.AsyncClient`` as a :data:`Transport`.
+
+    The way to plug this client into an async host application: pass the host's own long-lived client
+    (in Home Assistant, ``homeassistant.helpers.httpx_client.get_async_client(hass)``) so no SSL
+    context is ever built on the event loop and connections are pooled with the rest of the host's.
+    """
+    async def _transport(req: Request) -> Response:
+        resp = await client.request(
+            req.method,
+            req.url,
+            headers=req.headers,
+            content=req.body.encode("utf-8"),
+            timeout=HTTP_TIMEOUT,
+        )
+        return Response(status=resp.status_code, text=resp.text)
+
+    return _transport
+
+
+async def _async_default_client():  # pragma: no cover - needs httpx
+    """The per-loop shared client, constructed off-loop on first use (see :data:`_CLIENTS`)."""
     try:
         import httpx
     except ImportError as err:
         raise RuntimeError("pip install httpx to use the default transport") from err
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.request(
-            req.method, req.url, headers=req.headers, content=req.body.encode("utf-8")
+    loop = asyncio.get_running_loop()
+    if (client := _CLIENTS.get(loop)) is not None:
+        return client
+    async with _CLIENTS_LOCK:
+        if (client := _CLIENTS.get(loop)) is not None:  # built while we waited
+            return client
+        client = await loop.run_in_executor(
+            None, lambda: httpx.AsyncClient(timeout=HTTP_TIMEOUT)
         )
-        return Response(status=resp.status_code, text=resp.text)
+        _CLIENTS[loop] = client
+        return client
+
+
+async def _httpx_transport(req: Request) -> Response:  # pragma: no cover - needs network + httpx
+    return await httpx_transport(await _async_default_client())(req)
 
 
 # --- client --------------------------------------------------------------------

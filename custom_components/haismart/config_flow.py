@@ -47,6 +47,7 @@ except ImportError:  # pragma: no cover - HA < 2025.2
 if TYPE_CHECKING:
     from homeassistant.components.dhcp import DhcpServiceInfo
 
+from .cloud_transport import async_cloud_transport
 from .const import (
     CONF_ACCESS_TOKEN,
     CONF_CLOUD_CLIENT_ID,
@@ -81,18 +82,26 @@ class CloudAuthError(HomeAssistantError):
 
 
 async def _async_login_cloud(
-    username: str, password: str, zone_info: str
+    username: str, password: str, zone_info: str, *, transport=None
 ) -> tuple[HaierCloud, dict[str, str]]:
     """Sign in with an email/phone + password (reproduces the app's account login); return a ready
     client + creds to store. ``zone_info`` is the account's country/region zone (the phone
     country code — e.g. 66 Thailand, 65 Singapore); it routes the account lookup, so a wrong value
     gives "account not registered". We choose the CLIENTID at login (no mismatch); the durable
     refreshToken is what we persist. Social logins (Google/Facebook) have no password — share the AC
-    to a throwaway email/password account and log in with that instead."""
+    to a throwaway email/password account and log in with that instead.
+
+    ``transport`` MUST be HA's shared-client transport (:func:`async_cloud_transport`): the
+    library's own default would construct an httpx client, and that loads the CA bundle from disk —
+    blocking I/O on the event loop, which HA reports as a bug."""
     zone = zone_info.strip() or "0"
     try:
         client, result = await HaierCloud.login(
-            SEA_APP_CREDENTIALS, username.strip(), password, zone_info=zone
+            SEA_APP_CREDENTIALS,
+            username.strip(),
+            password,
+            zone_info=zone,
+            transport=transport,
         )
     except (CloudError, OSError, RuntimeError, TimeoutError) as err:
         raise CloudAuthError(str(err)) from err
@@ -243,6 +252,7 @@ class HaismartConfigFlow(ConfigFlow, domain=DOMAIN):
                     user_input[CONF_USERNAME],
                     user_input[CONF_PASSWORD],
                     user_input.get(CONF_ZONE_INFO, ""),
+                    transport=async_cloud_transport(self.hass),
                 )
                 self._devices = await self._cloud.list_devices_v2()
             except CloudAuthError:
