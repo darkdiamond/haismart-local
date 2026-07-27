@@ -497,6 +497,39 @@ async def test_diagnostics_redacts_secrets(hass: HomeAssistant, mock_uss) -> Non
     assert diag["last_raw_status"] == mock_uss.frame.hex()
 
 
+async def test_diagnostics_redacts_cloud_credentials(hass: HomeAssistant, mock_uss) -> None:
+    """Every credential a cloud-onboarded entry stores must be redacted, and must not survive
+    anywhere else in the payload. The older test above builds an entry with no tokens in it, so it
+    was structurally incapable of noticing that the account tokens were dumped in full — and users
+    are asked to attach this file to public issues. `refresh_token` is durable and reusable: leaking
+    it hands over the whole Haier account.
+    """
+    import json
+
+    from custom_components.haismart.diagnostics import (
+        async_get_config_entry_diagnostics,
+    )
+
+    secrets = {
+        "refresh_token": "2_SECRET_REFRESH",
+        "access_token": "SECRET_ACCESS",
+        "cloud_client_id": "SECRETCLIENTID0123456789ABCDEF01",
+        "gateway_username": "0172114171",
+        "gateway_password": "SECRETGATEWAYPASSWORD0000000000",
+    }
+    entry = _entry(**secrets)
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    diag = await async_get_config_entry_diagnostics(hass, entry)
+    dumped = json.dumps(diag)
+    for key, value in secrets.items():
+        assert diag["entry"][key] == "**REDACTED**", key
+        assert value not in dumped, f"{key} leaked elsewhere in the payload"
+    assert diag["entry"][CONF_LOCAL_KEY] == "**REDACTED**"
+
+
 async def test_empty_reads_same_version_is_transient(
     hass: HomeAssistant, mock_uss, freezer
 ) -> None:

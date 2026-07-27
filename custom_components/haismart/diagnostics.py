@@ -6,10 +6,31 @@ from typing import Any
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_DEVICE_ID, CONF_LOCAL_KEY
+from .const import (
+    CONF_ACCESS_TOKEN,
+    CONF_CLOUD_CLIENT_ID,
+    CONF_DEVICE_ID,
+    CONF_GATEWAY_PASSWORD,
+    CONF_GATEWAY_USERNAME,
+    CONF_LOCAL_KEY,
+    CONF_REFRESH_TOKEN,
+)
 from .coordinator import HaismartConfigEntry
 
-TO_REDACT = {CONF_LOCAL_KEY, CONF_DEVICE_ID, "unique_id"}
+# Diagnostics is the artefact users are asked to attach to a GitHub issue, so this must cover EVERY
+# credential in ``entry.data`` — not just the localKey. The cloud onboarding paths also store
+# account tokens, and ``refresh_token`` is deliberately durable and reusable: publishing it would
+# hand over indefinite access to the whole Haier account (and with it every AC on it).
+TO_REDACT = {
+    CONF_LOCAL_KEY,
+    CONF_REFRESH_TOKEN,
+    CONF_ACCESS_TOKEN,
+    CONF_CLOUD_CLIENT_ID,
+    CONF_GATEWAY_USERNAME,
+    CONF_GATEWAY_PASSWORD,
+    CONF_DEVICE_ID,
+    "unique_id",
+}
 
 
 async def async_get_config_entry_diagnostics(
