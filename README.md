@@ -22,6 +22,7 @@ once so the integration can fetch your unit's key — after that it talks only t
 - [Before you open an issue](#before-you-open-an-issue)
 - [Contributing](#contributing)
 - [Credits](#credits)
+- [How sign-in works](#how-sign-in-works)
 - [Disclaimer](#disclaimer)
 
 </details>
@@ -290,6 +291,24 @@ Standing on the shoulders of prior Haier reverse-engineering:
   the hOn platform
 
 And to everyone who opens an issue, reports a model, or stars the repo. ⭐
+
+## How sign-in works
+
+Setup uses **the app's own sign-in flow with your own account**: you enter your Haier credentials,
+the integration signs a normal API request with the app-level identifiers (an `appId`/`appKey` pair
+that is the same for every install of the Haismart app), and Haier returns your AC's local key. There
+is no authentication bypass, no defeated protection and no per-user secret of anyone else's involved —
+the same interoperability model that [`banto6/haier`](https://github.com/banto6/haier) uses for
+Haier's mainland app and [pyhOn](https://github.com/Andre0512/pyhOn) /
+[`hon`](https://github.com/Andre0512/hon) use for the hOn platform.
+
+Those app-level identifiers ship as defaults so sign-in works out of the box. If you would rather
+supply your own, every one of them is overridable by environment variable —
+`HAISMART_APP_ID`, `HAISMART_APP_KEY`, `HAISMART_CLIENT_ID`, `HAISMART_APP_VERSION`.
+
+Everything after setup is local: the protocol the AC speaks on port 56800 was worked out for this
+project so a unit you own can be driven from your own network. That is the point of the exercise —
+interoperability with your own hardware, not access to anything that isn't yours.
 
 ## Disclaimer
 
