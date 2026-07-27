@@ -1,0 +1,226 @@
+{
+  "config": {
+    "flow_title": "海尔空调 {device_id}",
+    "step": {
+      "user": {
+        "title": "添加海尔空调",
+        "description": "使用你的 Haismart 邮箱/密码登录，或手动填写设备信息。使用 Google/Facebook 账号的用户：请另建一个使用邮箱和密码的海尔账号，在 App 中把空调共享给它，然后用该账号登录。",
+        "menu_options": {
+          "login": "使用海尔账号登录（邮箱或手机号 + 密码）",
+          "manual": "我自己填写设备信息"
+        }
+      },
+      "login": {
+        "title": "登录你的海尔账号",
+        "description": "使用与海尔 / Haismart App 相同的账号。登录只需一次——之后 Home Assistant 只与你网络内的空调通信。\n\n用 Google 或 Facebook 登录的？这类账号没有密码。请用邮箱和密码创建一个海尔账号，在 App 中把空调共享给它，然后在这里用该账号登录。",
+        "data": {
+          "username": "邮箱或手机号",
+          "password": "密码",
+          "zone_info": "你的海尔账号注册所在国家/地区"
+        },
+        "data_description": {
+          "username": "你在海尔 App 中用来登录的那一个。",
+          "password": "你的海尔账号密码——不是 Home Assistant 的密码。",
+          "zone_info": "你创建海尔账号时选择的国家/地区，不一定是空调安装地或你现在的居住地。Home Assistant 已预选了你配置的国家/地区；如果账号注册在别处，请改选。"
+        }
+      },
+      "pick_device": {
+        "title": "选择设备",
+        "data": {
+          "device_id": "设备"
+        },
+        "description": "选择要添加的空调。其密钥会从云端获取，IP 地址会在你的网络中自动找到——你无需粘贴任何内容。"
+      },
+      "manual": {
+        "title": "设备信息",
+        "description": "不登录也能配置空调。你需要三项信息，它们都可以从上次安装的“本地密钥”传感器或备份中获得。",
+        "data": {
+          "host": "IP 地址",
+          "device_id": "设备 ID",
+          "local_key": "本地密钥（32 位十六进制）",
+          "name": "名称",
+          "product_code": "产品代码（typeId）"
+        },
+        "data_description": {
+          "host": "空调在你网络中的 IP 地址，例如 192.168.1.50。设置 DHCP 保留地址可避免它变化。",
+          "device_id": "Wi-Fi 模块的 MAC 地址，不含分隔符，例如 A1B2C3D4E5F6。",
+          "local_key": "空调用来加密其状态的 32 位密钥。它由海尔云端按设备下发——登录方式会自动为你获取。",
+          "name": "可选。这台空调在 Home Assistant 中的名称。",
+          "product_code": "可选。你的型号的产品代码，可在海尔 App 的设备详情中查看，例如 AACRL2E00。除非你确定，否则请保持原样——它只用于在没有存储型号描述时选择一个备用配置。"
+        }
+      },
+      "reauth_confirm": {
+        "title": "本地密钥已轮换",
+        "description": "空调 {device_id} 报告了更新的 localKey 版本——缓存的密钥已无法解密其状态。请输入该空调当前的 localKey 以重新连接。",
+        "data": {
+          "local_key": "本地密钥（32 位十六进制）"
+        },
+        "data_description": {
+          "local_key": "在设备页面启用“本地密钥”诊断传感器即可读取当前密钥，或用你的海尔账号重新添加该空调以便自动获取。"
+        }
+      },
+      "host": {
+        "title": "输入空调的 IP 地址",
+        "description": "已登录且密钥已自动获取——只是 Home Assistant 无法自行在网络中找到 {device}。请输入它的本地 IP 地址（例如 192.168.1.50）。提示：设置 DHCP 保留地址可保持其稳定。",
+        "data": {
+          "host": "IP 地址"
+        },
+        "data_description": {
+          "host": "在路由器上设置 DHCP 保留地址可避免它发生变化。"
+        }
+      },
+      "key_failed": {
+        "title": "无法自动获取密钥",
+        "description": "Home Assistant 登录成功，但未能从海尔服务器取得这台空调的本地密钥——或者取得的密钥无法解密该机的状态。\n\n这通常是暂时性的，因此再试一次往往值得。如果一直失败，你可以手动填写信息，不过密钥无法从机器上读取——你需要从上次安装的“本地密钥”传感器或备份中获取。",
+        "menu_options": {
+          "key_retry": "再次尝试获取密钥",
+          "manual": "改为手动填写信息"
+        }
+      },
+      "reconfigure": {
+        "title": "重新配置这台空调",
+        "description": "更改 Home Assistant 连接这台机器的方式，无需删除它而丢失历史记录。",
+        "menu_options": {
+          "reconfigure_host": "更改 IP 地址",
+          "reconfigure_cloud": "添加我的海尔账号，让密钥自动刷新"
+        }
+      },
+      "reconfigure_host": {
+        "title": "更改 IP 地址",
+        "description": "新地址在保存前会先与空调核对。",
+        "data": {
+          "host": "IP 地址"
+        },
+        "data_description": {
+          "host": "在路由器上设置 DHCP 保留地址可避免它再次变化。"
+        }
+      },
+      "reconfigure_cloud": {
+        "title": "添加你的海尔账号",
+        "description": "这台空调是手动添加的，因此当海尔轮换密钥时 Home Assistant 无从刷新——这就是你时不时被要求输入新密钥的原因。登录一次，此后密钥便会自动刷新。",
+        "data": {
+          "username": "邮箱或手机号",
+          "password": "密码",
+          "zone_info": "你的海尔账号注册所在国家/地区"
+        },
+        "data_description": {
+          "zone_info": "创建该账号时所在的国家/地区，可能不是你的居住地或空调的安装地。"
+        }
+      },
+      "reauth": {
+        "title": "这台空调需要新的密钥",
+        "description": "海尔轮换了这台机器的本地密钥，Home Assistant 已无法读取其状态。重新登录会为你取得新密钥——这几乎总是正确的选择。只有当你已经持有密钥时，手动输入才有意义。",
+        "menu_options": {
+          "reauth_cloud": "登录并自动获取新密钥",
+          "reauth_confirm": "我有密钥——让我手动输入"
+        }
+      },
+      "reauth_cloud": {
+        "title": "登录以获取新密钥",
+        "data": {
+          "username": "邮箱或手机号",
+          "password": "密码",
+          "zone_info": "你的海尔账号注册所在国家/地区"
+        }
+      }
+    },
+    "error": {
+      "account_not_in_region": "在你选择的国家/地区（+{zone}）未找到海尔账号“{username}”。这里指的是账号注册所在的国家/地区，可能不是你的居住地或空调所在地。请选对后重试。如果你的空调使用的是 hOn 或海尔智家 App，本集成完全无法登录那些账号。",
+      "missing_field": "海尔拒绝了本次登录，因为有字段缺失或为空。",
+      "cloud_auth": "登录失败。请检查你的邮箱或手机号以及密码。",
+      "cannot_connect_cloud": "登录成功，但无法连接海尔服务器以列出你的设备。这通常是暂时性的——请稍后再试。",
+      "invalid_key": "本地密钥必须是 32 位十六进制字符串。",
+      "invalid_auth": "空调有响应，但此本地密钥无法解密其状态——密钥有误，或已被轮换。",
+      "cannot_connect": "无法通过 56800 端口连接到空调。请检查 IP 地址，并确认 Home Assistant 与它在同一网络中。"
+    },
+    "abort": {
+      "already_configured": "此设备已配置。",
+      "reauth_successful": "本地密钥已更新。",
+      "all_configured": "此账号下的所有空调均已添加到 Home Assistant。",
+      "unknown": "意外错误——无法理解设备的通告信息。",
+      "no_devices": "已以 {username} 登录，但此海尔账号下没有设备。如果你在 App 中使用 Google 或 Facebook 登录，请先在 App 中把空调共享到此账号，然后重试。",
+      "already_in_progress": "这台空调已在配置流程中。"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Haismart 选项",
+        "data": {
+          "scan_interval": "状态轮询间隔（秒）"
+        },
+        "data_description": {
+          "scan_interval": "多久向空调查询一次状态。每次轮询都是一个完整的本地会话，其唯一作用是察觉通过遥控器或 App 所做的更改——你从 Home Assistant 发出的命令无论如何都会即时更新。"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "indoor_temperature": {
+        "name": "室内温度"
+      },
+      "outdoor_temperature": {
+        "name": "室外温度"
+      },
+      "local_key": {
+        "name": "本地密钥"
+      }
+    },
+    "switch": {
+      "strong": {
+        "name": "强劲"
+      },
+      "quiet": {
+        "name": "静音"
+      },
+      "health": {
+        "name": "健康"
+      },
+      "sleep": {
+        "name": "睡眠"
+      },
+      "lamp": {
+        "name": "显示灯"
+      }
+    },
+    "select": {
+      "eco": {
+        "name": "节能",
+        "state": {
+          "off": "关闭",
+          "level1": "节能 5",
+          "level2": "节能 6",
+          "level3": "节能 7"
+        }
+      }
+    }
+  },
+  "issues": {
+    "stale_localkey_manual_reauth": {
+      "title": "{name}：localKey 已轮换——需要手动重新输入密钥",
+      "description": "该空调轮换了本地密钥（v{old} → v{new}），而此设备未存储海尔账号凭据，因此 Home Assistant 无法自行刷新密钥，只能向你索取。\n\n要避免再次发生，请打开该设备，选择 **重新配置**，并添加你的海尔账号。此后每次轮换密钥都会自动刷新。"
+    },
+    "unknown_report_layout": {
+      "title": "{name}：尚未识别这台空调的状态格式",
+      "description": "{name} 发送 {length} 字节的状态报告，本集成尚无已确认的对应布局（产品代码：{product_code}）。\n\n温度、模式、风速和开关仍可正常使用。室内和室外温度不可用，发送命令也已禁用——在未知格式中猜测各项设置的位置，有可能把传感器读数当作设置写回机器。\n\n增加支持无需写代码，只需你提供三段简短的抓包记录。请按所链接的指南操作并提交报告；通常改一行即可。"
+    }
+  },
+  "exceptions": {
+    "control_failed": {
+      "message": "无法向 {name} 发送命令：{error}"
+    },
+    "control_rejected": {
+      "message": "{name} 不接受该设置：{error}"
+    },
+    "no_status": {
+      "message": "Home Assistant 尚未读取到 {name} 的当前状态，因此无法发送命令——每条命令都基于该机的实时设置构建，以便保留其余设置。请等待下次更新后重试。"
+    },
+    "layout_unknown": {
+      "message": "已为 {name} 禁用控制：其 {length} 字节的状态格式尚未被识别，无法安全地构建命令。请查看修复通知。"
+    },
+    "unsupported_value": {
+      "message": "{name} 的 {field} 不支持 {value!r}。"
+    }
+  }
+}

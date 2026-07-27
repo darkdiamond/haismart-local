@@ -1,0 +1,226 @@
+{
+  "config": {
+    "flow_title": "Aer condiționat Haier {device_id}",
+    "step": {
+      "user": {
+        "title": "Adaugă un aer condiționat Haier",
+        "description": "Autentifică-te cu e-mailul și parola Haismart sau introdu manual datele dispozitivului. Conturi Google/Facebook: creează un cont Haier separat, cu e-mail și parolă, partajează-i aparatele din aplicație, apoi autentifică-te cu acel cont.",
+        "menu_options": {
+          "login": "Autentificare cu contul meu Haier (e-mail sau telefon + parolă)",
+          "manual": "Introduc eu datele dispozitivului"
+        }
+      },
+      "login": {
+        "title": "Autentifică-te în contul tău Haier",
+        "description": "Folosește același cont pe care îl folosești în aplicația Haier / Haismart. Autentificarea are loc o singură dată — după aceea, Home Assistant comunică doar cu aparatul de aer condiționat din rețeaua ta.\n\nTe autentifici cu Google sau Facebook? Acele conturi nu au parolă. Creează un cont Haier cu e-mail și parolă, partajează-i aparatul din aplicație, apoi autentifică-te aici cu el.",
+        "data": {
+          "username": "E-mail sau număr de telefon",
+          "password": "Parolă",
+          "zone_info": "Țara în care este înregistrat contul tău Haier"
+        },
+        "data_description": {
+          "username": "Cel pe care îl folosești pentru a intra în aplicația Haier.",
+          "password": "Parola contului tău Haier — nu parola de Home Assistant.",
+          "zone_info": "Țara aleasă la crearea contului Haier, care nu este neapărat cea în care este montat aparatul sau în care locuiești acum. Home Assistant a preselectat țara configurată; schimb-o dacă ți-ai înregistrat contul în altă parte."
+        }
+      },
+      "pick_device": {
+        "title": "Alege un dispozitiv",
+        "data": {
+          "device_id": "Dispozitiv"
+        },
+        "description": "Alege ce aparat de aer condiționat vrei să adaugi. Cheia lui este preluată din cloud, iar adresa IP este găsită automat în rețeaua ta — nu va trebui să lipești nimic."
+      },
+      "manual": {
+        "title": "Datele dispozitivului",
+        "description": "Configurează aparatul fără autentificare. Ai nevoie de trei lucruri, toate obținute din senzorul „Cheie locală” al unei instalări anterioare sau dintr-o copie de rezervă.",
+        "data": {
+          "host": "Adresă IP",
+          "device_id": "ID dispozitiv",
+          "local_key": "Cheie locală (32 de caractere hexazecimale)",
+          "name": "Nume",
+          "product_code": "Cod de produs (typeId)"
+        },
+        "data_description": {
+          "host": "Adresa IP a aparatului în rețeaua ta, de ex. 192.168.1.50. O rezervare DHCP împiedică schimbarea ei.",
+          "device_id": "Adresa MAC a modulului Wi-Fi, fără separatori, de ex. A1B2C3D4E5F6.",
+          "local_key": "Cheia de 32 de caractere cu care aparatul își criptează starea. Este emisă de cloudul Haier pentru fiecare dispozitiv — calea cu autentificare o preia în locul tău.",
+          "name": "Opțional. Cum se va numi acest aparat în Home Assistant.",
+          "product_code": "Opțional. Codul de produs al modelului tău, afișat în detaliile dispozitivului din aplicația Haier, de ex. AACRL2E00. Lasă-l așa dacă nu îl cunoști — doar selectează o variantă de rezervă folosită când nu există o descriere de model salvată."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Cheia locală s-a schimbat",
+        "description": "Aparatul {device_id} raportează o versiune mai nouă de localKey — cheia stocată nu îi mai decriptează starea. Introdu localKey-ul curent al aparatului pentru a te reconecta.",
+        "data": {
+          "local_key": "Cheie locală (32 de caractere hexazecimale)"
+        },
+        "data_description": {
+          "local_key": "Activează senzorul de diagnosticare „Cheie locală” din pagina dispozitivului pentru a o citi pe cea curentă, sau adaugă din nou aparatul folosind contul tău Haier, ca să fie preluată automat."
+        }
+      },
+      "host": {
+        "title": "Introdu adresa IP a aparatului",
+        "description": "Autentificarea a reușit și cheia a fost preluată automat — doar că Home Assistant nu a putut găsi singur {device} în rețea. Introdu adresa IP locală (de ex. 192.168.1.50). Sfat: o rezervare DHCP o menține stabilă.",
+        "data": {
+          "host": "Adresă IP"
+        },
+        "data_description": {
+          "host": "O rezervare DHCP pe router împiedică schimbarea acestei adrese."
+        }
+      },
+      "key_failed": {
+        "title": "Cheia nu a putut fi preluată automat",
+        "description": "Home Assistant s-a autentificat, dar nu a reușit să obțină cheia locală a acestui aparat de la serverele Haier — sau cheia primită nu decriptează starea unității.\n\nDe obicei este ceva temporar, așa că merită să încerci din nou. Dacă eșecul persistă, poți introduce datele manual, deși cheia nu este ceva ce poți citi de pe aparat — ți-ar trebui din senzorul „Cheie locală” al unei instalări anterioare sau dintr-o copie de rezervă.",
+        "menu_options": {
+          "key_retry": "Încearcă din nou să preiei cheia",
+          "manual": "Introdu în schimb datele manual"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigurează acest aparat de aer condiționat",
+        "description": "Schimbă modul în care Home Assistant ajunge la această unitate, fără să o elimini și să îi pierzi istoricul.",
+        "menu_options": {
+          "reconfigure_host": "Schimbă adresa IP",
+          "reconfigure_cloud": "Adaugă contul meu Haier, ca să se reînnoiască singură cheia"
+        }
+      },
+      "reconfigure_host": {
+        "title": "Schimbă adresa IP",
+        "description": "Noua adresă este verificată pe aparat înainte de a fi salvată.",
+        "data": {
+          "host": "Adresă IP"
+        },
+        "data_description": {
+          "host": "O rezervare DHCP pe router împiedică schimbarea ei din nou."
+        }
+      },
+      "reconfigure_cloud": {
+        "title": "Adaugă contul tău Haier",
+        "description": "Acest aparat a fost adăugat manual, așa că Home Assistant nu are cum să reînnoiască cheia atunci când Haier o schimbă — de aceea ți se cere din când în când o cheie nouă. Autentifică-te o dată și, de atunci înainte, cheia se va reînnoi singură.",
+        "data": {
+          "username": "E-mail sau număr de telefon",
+          "password": "Parolă",
+          "zone_info": "Țara în care este înregistrat contul tău Haier"
+        },
+        "data_description": {
+          "zone_info": "Țara în care a fost creat contul, care poate să nu fie cea în care locuiești sau în care este montat aparatul."
+        }
+      },
+      "reauth": {
+        "title": "Acest aparat are nevoie de o cheie nouă",
+        "description": "Haier a schimbat cheia locală a acestei unități, așa că Home Assistant nu îi mai poate citi starea. Reautentificarea preia noua cheie în locul tău — aproape întotdeauna aceasta este alegerea potrivită. Introducerea manuală a unei chei este utilă doar dacă o ai deja.",
+        "menu_options": {
+          "reauth_cloud": "Autentifică-te și preia automat cheia nouă",
+          "reauth_confirm": "Am cheia — o introduc eu"
+        }
+      },
+      "reauth_cloud": {
+        "title": "Autentifică-te pentru a prelua cheia nouă",
+        "data": {
+          "username": "E-mail sau număr de telefon",
+          "password": "Parolă",
+          "zone_info": "Țara în care este înregistrat contul tău Haier"
+        }
+      }
+    },
+    "error": {
+      "account_not_in_region": "Nu a fost găsit niciun cont Haier „{username}” în țara selectată (+{zone}). Aceasta este țara în care a fost înregistrat contul, care poate să nu fie cea în care locuiești sau în care se află aparatul. Alege-o pe cea corectă și încearcă din nou. Dacă aparatul tău folosește în schimb aplicația hOn sau Haier China, această integrare nu se poate autentifica deloc în acele conturi.",
+      "missing_field": "Haier a respins autentificarea pentru că un câmp lipsea sau era gol.",
+      "cloud_auth": "Autentificarea a eșuat. Verifică e-mailul sau numărul de telefon și parola.",
+      "cannot_connect_cloud": "Autentificarea a reușit, dar serverele Haier nu au putut fi contactate pentru a-ți lista dispozitivele. De obicei este temporar — încearcă din nou peste puțin timp.",
+      "invalid_key": "Cheia locală trebuie să fie un șir hexazecimal de 32 de caractere.",
+      "invalid_auth": "Aparatul a răspuns, dar această cheie locală nu îi decriptează starea — cheia este greșită sau a fost schimbată.",
+      "cannot_connect": "Aparatul nu a putut fi contactat pe portul 56800. Verifică adresa IP și dacă Home Assistant se află în aceeași rețea."
+    },
+    "abort": {
+      "already_configured": "Acest dispozitiv este deja configurat.",
+      "reauth_successful": "Cheia locală a fost actualizată.",
+      "all_configured": "Toate aparatele acestui cont sunt deja adăugate în Home Assistant.",
+      "unknown": "Eroare neașteptată — anunțul dispozitivului nu a fost înțeles.",
+      "no_devices": "Autentificat ca {username}, dar acest cont Haier nu are dispozitive. Dacă intri în aplicație cu Google sau Facebook, partajează mai întâi aparatul cu acest cont din aplicație, apoi încearcă din nou.",
+      "already_in_progress": "Acest aparat este deja în curs de configurare."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opțiuni Haismart",
+        "data": {
+          "scan_interval": "Interval de interogare a stării (secunde)"
+        },
+        "data_description": {
+          "scan_interval": "Cât de des să fie întrebat aparatul despre starea sa. Fiecare interogare este o sesiune locală completă și există doar pentru a observa modificările făcute de la telecomandă sau din aplicație — comenzile trimise din Home Assistant se actualizează instantaneu oricum."
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "indoor_temperature": {
+        "name": "Temperatură interioară"
+      },
+      "outdoor_temperature": {
+        "name": "Temperatură exterioară"
+      },
+      "local_key": {
+        "name": "Cheie locală"
+      }
+    },
+    "switch": {
+      "strong": {
+        "name": "Turbo"
+      },
+      "quiet": {
+        "name": "Silențios"
+      },
+      "health": {
+        "name": "Ionizare"
+      },
+      "sleep": {
+        "name": "Mod nocturn"
+      },
+      "lamp": {
+        "name": "Lumina afișajului"
+      }
+    },
+    "select": {
+      "eco": {
+        "name": "Eco",
+        "state": {
+          "off": "Oprit",
+          "level1": "Eco 5",
+          "level2": "Eco 6",
+          "level3": "Eco 7"
+        }
+      }
+    }
+  },
+  "issues": {
+    "stale_localkey_manual_reauth": {
+      "title": "{name}: localKey schimbat — este necesară introducerea manuală a cheii",
+      "description": "Aparatul și-a schimbat cheia locală (v{old} → v{new}), iar pentru acest dispozitiv nu sunt salvate date de cont Haier, așa că Home Assistant nu a putut reînnoi cheia singur și a fost nevoit să ți-o ceară.\n\nCa să nu se mai întâmple, deschide dispozitivul, alege **Reconfigurare** și adaugă-ți contul Haier. Cheia se va reînnoi apoi singură la fiecare schimbare."
+    },
+    "unknown_report_layout": {
+      "title": "{name}: formatul de stare al acestui aparat nu este încă recunoscut",
+      "description": "{name} trimite un raport de stare de {length} octeți, pentru care această integrare nu are nicio dispunere confirmată (cod de produs: {product_code}).\n\nTemperatura, modul, viteza ventilatorului și pornirea/oprirea funcționează în continuare. Temperaturile interioară și exterioară nu sunt disponibile, iar trimiterea comenzilor este dezactivată — a ghici unde se află setările într-un format necunoscut riscă să scrie înapoi în aparat o valoare citită de la un senzor, ca și cum ar fi o setare.\n\nAdăugarea suportului nu necesită cod, ci doar trei capturi scurte din partea ta. Urmează ghidul din link și deschide o sesizare; de obicei este o corecție de un singur rând."
+    }
+  },
+  "exceptions": {
+    "control_failed": {
+      "message": "Comanda nu a putut fi trimisă către {name}: {error}"
+    },
+    "control_rejected": {
+      "message": "{name} nu acceptă această setare: {error}"
+    },
+    "no_status": {
+      "message": "Home Assistant nu a citit încă starea curentă a {name}, așa că nu poate trimite o comandă — fiecare comandă este construită din setările curente ale unității, pentru a le păstra pe celelalte. Așteaptă următoarea actualizare și încearcă din nou."
+    },
+    "layout_unknown": {
+      "message": "Controlul este dezactivat pentru {name}: formatul său de stare de {length} octeți nu este recunoscut, așa că o comandă nu poate fi construită în siguranță. Vezi notificarea de reparație."
+    },
+    "unsupported_value": {
+      "message": "{name} nu acceptă {value!r} pentru {field}."
+    }
+  }
+}

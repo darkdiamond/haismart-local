@@ -1,0 +1,226 @@
+{
+  "config": {
+    "flow_title": "Klimatyzator Haier {device_id}",
+    "step": {
+      "user": {
+        "title": "Dodaj klimatyzator Haier",
+        "description": "Zaloguj się adresem e-mail i hasłem Haismart albo wprowadź dane urządzenia ręcznie. Konta Google/Facebook: załóż osobne konto Haier z adresem e-mail i hasłem, udostępnij mu swoje klimatyzatory w aplikacji, a następnie zaloguj się tym kontem.",
+        "menu_options": {
+          "login": "Zaloguj się kontem Haier (e-mail lub numer telefonu + hasło)",
+          "manual": "Sam wprowadzę dane urządzenia"
+        }
+      },
+      "login": {
+        "title": "Zaloguj się do konta Haier",
+        "description": "Użyj tego samego konta, którego używasz w aplikacji Haier / Haismart. Logowanie następuje tylko raz — potem Home Assistant komunikuje się wyłącznie z klimatyzatorem w Twojej sieci.\n\nLogujesz się przez Google lub Facebooka? Takie konta nie mają hasła. Załóż konto Haier z adresem e-mail i hasłem, udostępnij mu klimatyzator w aplikacji, a potem zaloguj się tutaj tym kontem.",
+        "data": {
+          "username": "E-mail lub numer telefonu",
+          "password": "Hasło",
+          "zone_info": "Kraj, w którym zarejestrowano Twoje konto Haier"
+        },
+        "data_description": {
+          "username": "To, czego używasz do logowania w aplikacji Haier.",
+          "password": "Hasło do konta Haier — nie hasło do Home Assistanta.",
+          "zone_info": "Kraj wybrany podczas zakładania konta Haier, niekoniecznie ten, w którym zamontowano klimatyzator lub w którym teraz mieszkasz. Home Assistant wstępnie wybrał skonfigurowany kraj; zmień go, jeśli konto zarejestrowano gdzie indziej."
+        }
+      },
+      "pick_device": {
+        "title": "Wybierz urządzenie",
+        "data": {
+          "device_id": "Urządzenie"
+        },
+        "description": "Wybierz klimatyzator do dodania. Jego klucz zostanie pobrany z chmury, a adres IP odnaleziony w Twojej sieci automatycznie — nic nie będziesz musiał wklejać."
+      },
+      "manual": {
+        "title": "Dane urządzenia",
+        "description": "Skonfiguruj klimatyzator bez logowania. Potrzebne są trzy rzeczy, wszystkie do zdobycia z sensora „Klucz lokalny” z poprzedniej instalacji lub z kopii zapasowej.",
+        "data": {
+          "host": "Adres IP",
+          "device_id": "Identyfikator urządzenia",
+          "local_key": "Klucz lokalny (32 znaki szesnastkowe)",
+          "name": "Nazwa",
+          "product_code": "Kod produktu (typeId)"
+        },
+        "data_description": {
+          "host": "Adres IP klimatyzatora w Twojej sieci, np. 192.168.1.50. Rezerwacja DHCP zapobiega jego zmianie.",
+          "device_id": "Adres MAC modułu Wi-Fi bez separatorów, np. A1B2C3D4E5F6.",
+          "local_key": "32-znakowy klucz, którym klimatyzator szyfruje swój stan. Wydaje go chmura Haiera osobno dla każdego urządzenia — ścieżka z logowaniem pobierze go za Ciebie.",
+          "name": "Opcjonalnie. Nazwa tego klimatyzatora w Home Assistancie.",
+          "product_code": "Opcjonalnie. Kod produktu Twojego modelu, widoczny w szczegółach urządzenia w aplikacji Haier, np. AACRL2E00. Zostaw bez zmian, jeśli go nie znasz — wybiera on jedynie ustawienie zapasowe używane, gdy nie zapisano opisu modelu."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Klucz lokalny został zmieniony",
+        "description": "Klimatyzator {device_id} zgłasza nowszą wersję localKey — zapisany klucz nie odszyfrowuje już jego stanu. Wprowadź bieżący localKey klimatyzatora, aby połączyć się ponownie.",
+        "data": {
+          "local_key": "Klucz lokalny (32 znaki szesnastkowe)"
+        },
+        "data_description": {
+          "local_key": "Włącz diagnostyczny sensor „Klucz lokalny” na stronie urządzenia, aby odczytać bieżący klucz, albo dodaj klimatyzator ponownie przy użyciu konta Haier, aby był pobierany automatycznie."
+        }
+      },
+      "host": {
+        "title": "Podaj adres IP klimatyzatora",
+        "description": "Zalogowano i klucz pobrano automatycznie — Home Assistant po prostu nie odnalazł {device} w sieci samodzielnie. Podaj jego lokalny adres IP (np. 192.168.1.50). Wskazówka: rezerwacja DHCP utrzyma go bez zmian.",
+        "data": {
+          "host": "Adres IP"
+        },
+        "data_description": {
+          "host": "Rezerwacja DHCP na routerze zapobiega zmianie tego adresu."
+        }
+      },
+      "key_failed": {
+        "title": "Nie udało się pobrać klucza automatycznie",
+        "description": "Home Assistant zalogował się, ale nie zdołał pobrać klucza lokalnego tego klimatyzatora z serwerów Haiera — albo pobrany klucz nie odszyfrowuje stanu urządzenia.\n\nZwykle jest to przejściowe, więc ponowna próba zazwyczaj się opłaca. Jeśli błąd się powtarza, możesz wpisać dane ręcznie, choć klucza nie da się odczytać z samego urządzenia — potrzebowałbyś go z sensora „Klucz lokalny” z poprzedniej instalacji lub z kopii zapasowej.",
+        "menu_options": {
+          "key_retry": "Spróbuj pobrać klucz ponownie",
+          "manual": "Zamiast tego wpisz dane ręcznie"
+        }
+      },
+      "reconfigure": {
+        "title": "Zmień konfigurację tego klimatyzatora",
+        "description": "Zmień sposób, w jaki Home Assistant łączy się z tym urządzeniem, bez usuwania go i utraty historii.",
+        "menu_options": {
+          "reconfigure_host": "Zmień adres IP",
+          "reconfigure_cloud": "Dodaj moje konto Haier, aby klucz odświeżał się sam"
+        }
+      },
+      "reconfigure_host": {
+        "title": "Zmień adres IP",
+        "description": "Nowy adres zostanie sprawdzony na klimatyzatorze przed zapisaniem.",
+        "data": {
+          "host": "Adres IP"
+        },
+        "data_description": {
+          "host": "Rezerwacja DHCP na routerze zapobiegnie ponownej zmianie adresu."
+        }
+      },
+      "reconfigure_cloud": {
+        "title": "Dodaj swoje konto Haier",
+        "description": "Ten klimatyzator dodano ręcznie, więc Home Assistant nie ma jak odświeżyć klucza, gdy Haier go zmieni — dlatego od czasu do czasu prosi Cię o nowy. Zaloguj się raz, a od tej pory klucz będzie odświeżał się sam.",
+        "data": {
+          "username": "E-mail lub numer telefonu",
+          "password": "Hasło",
+          "zone_info": "Kraj, w którym zarejestrowano Twoje konto Haier"
+        },
+        "data_description": {
+          "zone_info": "Kraj, w którym założono konto; może być inny niż ten, w którym mieszkasz lub w którym zamontowano klimatyzator."
+        }
+      },
+      "reauth": {
+        "title": "Ten klimatyzator potrzebuje nowego klucza",
+        "description": "Haier zmienił klucz lokalny tego urządzenia, więc Home Assistant nie może już odczytać jego stanu. Ponowne zalogowanie pobierze nowy klucz za Ciebie — prawie zawsze jest to właściwy wybór. Ręczne wpisanie klucza ma sens tylko wtedy, gdy już go masz.",
+        "menu_options": {
+          "reauth_cloud": "Zaloguj się i pobierz nowy klucz automatycznie",
+          "reauth_confirm": "Mam klucz — wpiszę go sam"
+        }
+      },
+      "reauth_cloud": {
+        "title": "Zaloguj się, aby pobrać nowy klucz",
+        "data": {
+          "username": "E-mail lub numer telefonu",
+          "password": "Hasło",
+          "zone_info": "Kraj, w którym zarejestrowano Twoje konto Haier"
+        }
+      }
+    },
+    "error": {
+      "account_not_in_region": "Nie znaleziono konta Haier „{username}” w wybranym kraju (+{zone}). Chodzi o kraj, w którym zarejestrowano konto, a nie koniecznie ten, w którym mieszkasz lub w którym stoi klimatyzator. Wybierz właściwy i spróbuj ponownie. Jeśli Twój klimatyzator korzysta z aplikacji hOn lub Haier China, ta integracja w ogóle nie może zalogować się do tamtych kont.",
+      "missing_field": "Haier odrzucił logowanie, ponieważ brakowało jednego z pól lub było puste.",
+      "cloud_auth": "Logowanie nie powiodło się. Sprawdź adres e-mail lub numer telefonu oraz hasło.",
+      "cannot_connect_cloud": "Zalogowano pomyślnie, ale nie udało się połączyć z serwerami Haiera, aby pobrać listę urządzeń. Zwykle jest to przejściowe — spróbuj ponownie za chwilę.",
+      "invalid_key": "Klucz lokalny musi być 32-znakowym ciągiem szesnastkowym.",
+      "invalid_auth": "Klimatyzator odpowiedział, ale ten klucz lokalny nie odszyfrowuje jego stanu — klucz jest nieprawidłowy albo został zmieniony.",
+      "cannot_connect": "Nie udało się połączyć z klimatyzatorem na porcie 56800. Sprawdź adres IP oraz to, czy Home Assistant jest w tej samej sieci."
+    },
+    "abort": {
+      "already_configured": "To urządzenie jest już skonfigurowane.",
+      "reauth_successful": "Klucz lokalny został zaktualizowany.",
+      "all_configured": "Wszystkie klimatyzatory z tego konta zostały już dodane do Home Assistanta.",
+      "unknown": "Nieoczekiwany błąd — nie udało się zrozumieć ogłoszenia urządzenia.",
+      "no_devices": "Zalogowano jako {username}, ale to konto Haier nie ma żadnych urządzeń. Jeśli logujesz się w aplikacji przez Google lub Facebooka, najpierw udostępnij klimatyzator temu kontu w aplikacji, a potem spróbuj ponownie.",
+      "already_in_progress": "Ten klimatyzator jest już konfigurowany."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opcje Haismart",
+        "data": {
+          "scan_interval": "Częstotliwość odpytywania o stan (sekundy)"
+        },
+        "data_description": {
+          "scan_interval": "Jak często pytać klimatyzator o jego stan. Każde odpytanie to pełna sesja lokalna i służy wyłącznie do wychwycenia zmian wprowadzonych pilotem lub aplikacją — polecenia wysyłane z Home Assistanta i tak aktualizują się natychmiast."
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "indoor_temperature": {
+        "name": "Temperatura wewnętrzna"
+      },
+      "outdoor_temperature": {
+        "name": "Temperatura zewnętrzna"
+      },
+      "local_key": {
+        "name": "Klucz lokalny"
+      }
+    },
+    "switch": {
+      "strong": {
+        "name": "Turbo"
+      },
+      "quiet": {
+        "name": "Cichy"
+      },
+      "health": {
+        "name": "Zdrowie"
+      },
+      "sleep": {
+        "name": "Tryb nocny"
+      },
+      "lamp": {
+        "name": "Podświetlenie wyświetlacza"
+      }
+    },
+    "select": {
+      "eco": {
+        "name": "Eco",
+        "state": {
+          "off": "Wyłączone",
+          "level1": "Eco 5",
+          "level2": "Eco 6",
+          "level3": "Eco 7"
+        }
+      }
+    }
+  },
+  "issues": {
+    "stale_localkey_manual_reauth": {
+      "title": "{name}: localKey zmieniony — trzeba wpisać nowy klucz ręcznie",
+      "description": "Klimatyzator zmienił swój klucz lokalny (v{old} → v{new}), a dla tego urządzenia nie zapisano danych logowania do konta Haier, więc Home Assistant nie mógł odświeżyć klucza samodzielnie i musiał poprosić o niego Ciebie.\n\nAby to się nie powtórzyło, otwórz urządzenie, wybierz **Zmień konfigurację** i dodaj swoje konto Haier. Klucz będzie się wtedy odświeżał sam przy każdej zmianie."
+    },
+    "unknown_report_layout": {
+      "title": "{name}: format stanu tego klimatyzatora nie jest jeszcze rozpoznawany",
+      "description": "{name} wysyła raport stanu o długości {length} bajtów, dla którego ta integracja nie ma potwierdzonego układu (kod produktu: {product_code}).\n\nTemperatura, tryb, prędkość wentylatora oraz włączanie/wyłączanie nadal działają. Temperatura wewnętrzna i zewnętrzna są niedostępne, a wysyłanie poleceń jest wyłączone — zgadywanie, gdzie w nieznanym formacie leżą ustawienia, grozi zapisaniem odczytu z czujnika z powrotem do urządzenia jako ustawienia.\n\nDodanie obsługi nie wymaga kodu, wystarczą trzy krótkie zrzuty od Ciebie. Postępuj zgodnie z podlinkowanym przewodnikiem i zgłoś sprawę; zwykle jest to poprawka jednej linii."
+    }
+  },
+  "exceptions": {
+    "control_failed": {
+      "message": "Nie udało się wysłać polecenia do {name}: {error}"
+    },
+    "control_rejected": {
+      "message": "{name} nie przyjmuje tego ustawienia: {error}"
+    },
+    "no_status": {
+      "message": "Home Assistant nie odczytał jeszcze bieżącego stanu {name}, więc nie może wysłać polecenia — każde polecenie budowane jest na podstawie aktualnych ustawień urządzenia, aby zachować pozostałe. Poczekaj na następną aktualizację i spróbuj ponownie."
+    },
+    "layout_unknown": {
+      "message": "Sterowanie jest wyłączone dla {name}: format stanu o długości {length} bajtów nie jest rozpoznawany, więc nie da się bezpiecznie zbudować polecenia. Zobacz powiadomienie o naprawie."
+    },
+    "unsupported_value": {
+      "message": "{name} nie obsługuje {value!r} dla {field}."
+    }
+  }
+}

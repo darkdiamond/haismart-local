@@ -21,3 +21,18 @@ jobs:
           python-version: "3.13"
       - run: python -m pip install ruff
       - run: ruff check packages
+
+  translations:
+    name: Translations match strings.json
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      # A translation that has drifted from strings.json fails silently in Home Assistant -- a
+      # missing key falls back to English, and a mangled `{placeholder}` raises at runtime in a
+      # dialog nobody on the project reads. Neither shows up in any other job.
+      - run: ./scripts/check-translations.py

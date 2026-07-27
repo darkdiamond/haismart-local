@@ -1,0 +1,226 @@
+{
+  "config": {
+    "flow_title": "Haier-klimaanlæg {device_id}",
+    "step": {
+      "user": {
+        "title": "Tilføj et Haier-klimaanlæg",
+        "description": "Log ind med din Haismart-e-mail og adgangskode, eller indtast enhedsoplysningerne manuelt. Google-/Facebook-konti: opret en separat Haier-konto med e-mail og adgangskode, del dine anlæg med den i appen, og log derefter ind med den konto.",
+        "menu_options": {
+          "login": "Log ind med min Haier-konto (e-mail eller telefonnummer + adgangskode)",
+          "manual": "Jeg indtaster selv enhedsoplysningerne"
+        }
+      },
+      "login": {
+        "title": "Log ind på din Haier-konto",
+        "description": "Brug den samme konto som i Haier-/Haismart-appen. Login sker kun én gang – derefter taler Home Assistant udelukkende med klimaanlægget på dit netværk.\n\nLogger du ind med Google eller Facebook? De konti har ingen adgangskode. Opret en Haier-konto med e-mail og adgangskode, del anlægget med den i appen, og log derefter ind her med den konto.",
+        "data": {
+          "username": "E-mail eller telefonnummer",
+          "password": "Adgangskode",
+          "zone_info": "Land, hvor din Haier-konto er registreret"
+        },
+        "data_description": {
+          "username": "Det, du bruger til at logge ind i Haier-appen.",
+          "password": "Adgangskoden til din Haier-konto – ikke din Home Assistant-adgangskode.",
+          "zone_info": "Det land, du valgte, da du oprettede Haier-kontoen. Det er ikke nødvendigvis der, hvor anlægget er installeret, eller hvor du bor i dag. Home Assistant har forvalgt dit konfigurerede land; ret det, hvis din konto blev oprettet et andet sted."
+        }
+      },
+      "pick_device": {
+        "title": "Vælg en enhed",
+        "data": {
+          "device_id": "Enhed"
+        },
+        "description": "Vælg hvilket klimaanlæg der skal tilføjes. Nøglen hentes fra skyen, og IP-adressen findes automatisk på dit netværk – du skal ikke indsætte noget."
+      },
+      "manual": {
+        "title": "Enhedsoplysninger",
+        "description": "Sæt anlægget op uden at logge ind. Du skal bruge tre ting, som alle kan hentes fra sensoren “Lokal nøgle” fra en tidligere installation eller fra en sikkerhedskopi.",
+        "data": {
+          "host": "IP-adresse",
+          "device_id": "Enheds-ID",
+          "local_key": "Lokal nøgle (32 hex-tegn)",
+          "name": "Navn",
+          "product_code": "Produktkode (typeId)"
+        },
+        "data_description": {
+          "host": "Klimaanlæggets IP-adresse på dit netværk, f.eks. 192.168.1.50. En DHCP-reservation forhindrer, at den ændrer sig.",
+          "device_id": "Wi-Fi-modulets MAC-adresse uden skilletegn, f.eks. A1B2C3D4E5F6.",
+          "local_key": "Den 32 tegn lange nøgle, som anlægget krypterer sin status med. Den udstedes af Haiers sky pr. enhed – login-vejen henter den for dig.",
+          "name": "Valgfrit. Hvad dette klimaanlæg skal hedde i Home Assistant.",
+          "product_code": "Valgfrit. Produktkoden for din model, som vises under enhedsoplysninger i Haier-appen, f.eks. AACRL2E00. Lad den stå, medmindre du kender den – den vælger blot en reserveindstilling, der bruges, når der ikke er gemt nogen modelbeskrivelse."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Den lokale nøgle er skiftet",
+        "description": "Klimaanlægget {device_id} melder om en nyere localKey-version – den gemte nøgle kan ikke længere dekryptere dets status. Indtast anlæggets aktuelle localKey for at oprette forbindelse igen.",
+        "data": {
+          "local_key": "Lokal nøgle (32 hex-tegn)"
+        },
+        "data_description": {
+          "local_key": "Aktivér diagnosesensoren “Lokal nøgle” på enhedssiden for at aflæse den aktuelle, eller tilføj anlægget igen med din Haier-konto, så den hentes automatisk."
+        }
+      },
+      "host": {
+        "title": "Indtast klimaanlæggets IP-adresse",
+        "description": "Logget ind, og nøglen blev hentet automatisk – Home Assistant kunne bare ikke selv finde {device} på netværket. Indtast dens lokale IP-adresse (f.eks. 192.168.1.50). Tip: en DHCP-reservation holder den stabil.",
+        "data": {
+          "host": "IP-adresse"
+        },
+        "data_description": {
+          "host": "En DHCP-reservation i din router forhindrer, at den ændrer sig."
+        }
+      },
+      "key_failed": {
+        "title": "Nøglen kunne ikke hentes automatisk",
+        "description": "Home Assistant loggede ind, men kunne ikke hente dette klimaanlægs lokale nøgle fra Haiers servere – eller den hentede nøgle dekrypterer ikke anlæggets status.\n\nDet er ofte forbigående, så det kan som regel betale sig at prøve igen. Bliver det ved med at fejle, kan du indtaste oplysningerne manuelt, men nøglen kan ikke aflæses på anlægget – du ville skulle bruge den fra sensoren “Lokal nøgle” i en tidligere installation eller fra en sikkerhedskopi.",
+        "menu_options": {
+          "key_retry": "Prøv at hente nøglen igen",
+          "manual": "Indtast i stedet oplysningerne manuelt"
+        }
+      },
+      "reconfigure": {
+        "title": "Konfigurér dette klimaanlæg igen",
+        "description": "Ret hvordan Home Assistant når denne enhed, uden at fjerne den og miste dens historik.",
+        "menu_options": {
+          "reconfigure_host": "Skift IP-adresse",
+          "reconfigure_cloud": "Tilføj min Haier-konto, så nøglen fornyer sig selv"
+        }
+      },
+      "reconfigure_host": {
+        "title": "Skift IP-adresse",
+        "description": "Den nye adresse kontrolleres mod klimaanlægget, før den gemmes.",
+        "data": {
+          "host": "IP-adresse"
+        },
+        "data_description": {
+          "host": "En DHCP-reservation i din router forhindrer, at den ændrer sig igen."
+        }
+      },
+      "reconfigure_cloud": {
+        "title": "Tilføj din Haier-konto",
+        "description": "Dette klimaanlæg blev tilføjet manuelt, så Home Assistant har ingen måde at forny nøglen på, når Haier skifter den – derfor bliver du bedt om en ny nøgle fra tid til anden. Log ind én gang, så fornyer den sig selv fremover.",
+        "data": {
+          "username": "E-mail eller telefonnummer",
+          "password": "Adgangskode",
+          "zone_info": "Land, hvor din Haier-konto er registreret"
+        },
+        "data_description": {
+          "zone_info": "Det land, kontoen blev oprettet i, hvilket måske ikke er der, hvor du bor, eller hvor anlægget er installeret."
+        }
+      },
+      "reauth": {
+        "title": "Dette klimaanlæg har brug for en ny nøgle",
+        "description": "Haier har skiftet denne enheds lokale nøgle, så Home Assistant kan ikke længere læse dens status. At logge ind igen henter den nye nøgle for dig – det er næsten altid det rigtige valg. At indtaste en nøgle manuelt er kun nyttigt, hvis du allerede har den.",
+        "menu_options": {
+          "reauth_cloud": "Log ind, og hent den nye nøgle automatisk",
+          "reauth_confirm": "Jeg har nøglen – lad mig indtaste den"
+        }
+      },
+      "reauth_cloud": {
+        "title": "Log ind for at hente den nye nøgle",
+        "data": {
+          "username": "E-mail eller telefonnummer",
+          "password": "Adgangskode",
+          "zone_info": "Land, hvor din Haier-konto er registreret"
+        }
+      }
+    },
+    "error": {
+      "account_not_in_region": "Der blev ikke fundet nogen Haier-konto “{username}” i det valgte land (+{zone}). Det er det land, kontoen blev registreret i, hvilket måske ikke er der, hvor du bor, eller hvor anlægget står. Vælg det rigtige, og prøv igen. Bruger dit klimaanlæg i stedet hOn- eller Haier China-appen, kan denne integration slet ikke logge ind på de konti.",
+      "missing_field": "Haier afviste login, fordi et felt manglede eller var tomt.",
+      "cloud_auth": "Login mislykkedes. Kontrollér din e-mail eller dit telefonnummer og din adgangskode.",
+      "cannot_connect_cloud": "Login lykkedes, men Haiers servere kunne ikke nås for at hente listen over dine enheder. Det er som regel forbigående – prøv igen om et øjeblik.",
+      "invalid_key": "Den lokale nøgle skal være en hex-streng på 32 tegn.",
+      "invalid_auth": "Klimaanlægget svarede, men denne lokale nøgle dekrypterer ikke dets status – nøglen er forkert eller er blevet skiftet.",
+      "cannot_connect": "Klimaanlægget kunne ikke nås på port 56800. Kontrollér IP-adressen, og at Home Assistant er på samme netværk."
+    },
+    "abort": {
+      "already_configured": "Denne enhed er allerede konfigureret.",
+      "reauth_successful": "Den lokale nøgle er opdateret.",
+      "all_configured": "Alle denne kontos klimaanlæg er allerede tilføjet til Home Assistant.",
+      "unknown": "Uventet fejl – enhedens annoncering blev ikke forstået.",
+      "no_devices": "Logget ind som {username}, men denne Haier-konto har ingen enheder. Hvis du logger ind i appen med Google eller Facebook, så del først klimaanlægget med denne konto i appen, og prøv derefter igen.",
+      "already_in_progress": "Dette klimaanlæg er allerede ved at blive sat op."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Haismart-indstillinger",
+        "data": {
+          "scan_interval": "Interval for statusforespørgsel (sekunder)"
+        },
+        "data_description": {
+          "scan_interval": "Hvor ofte anlægget skal spørges om sin tilstand. Hver forespørgsel er en fuld lokal session, og den findes udelukkende for at opdage ændringer foretaget med fjernbetjeningen eller appen – kommandoer, du sender fra Home Assistant, opdateres med det samme under alle omstændigheder."
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "indoor_temperature": {
+        "name": "Indendørstemperatur"
+      },
+      "outdoor_temperature": {
+        "name": "Udendørstemperatur"
+      },
+      "local_key": {
+        "name": "Lokal nøgle"
+      }
+    },
+    "switch": {
+      "strong": {
+        "name": "Turbo"
+      },
+      "quiet": {
+        "name": "Stille"
+      },
+      "health": {
+        "name": "Health"
+      },
+      "sleep": {
+        "name": "Nattilstand"
+      },
+      "lamp": {
+        "name": "Displaylys"
+      }
+    },
+    "select": {
+      "eco": {
+        "name": "Eco",
+        "state": {
+          "off": "Fra",
+          "level1": "Eco 5",
+          "level2": "Eco 6",
+          "level3": "Eco 7"
+        }
+      }
+    }
+  },
+  "issues": {
+    "stale_localkey_manual_reauth": {
+      "title": "{name}: localKey skiftet – nøglen skal indtastes manuelt",
+      "description": "Klimaanlægget skiftede sin lokale nøgle (v{old} → v{new}), og der er ingen Haier-kontooplysninger gemt for denne enhed, så Home Assistant kunne ikke forny nøglen selv og måtte bede dig om en.\n\nFor at undgå det fremover: åbn enheden, vælg **Konfigurér igen**, og tilføj din Haier-konto. Nøglen fornyer sig så selv ved hvert skift."
+    },
+    "unknown_report_layout": {
+      "title": "{name}: dette klimaanlægs statusformat genkendes ikke endnu",
+      "description": "{name} sender en statusrapport på {length} byte, som denne integration ikke har noget bekræftet layout for (produktkode: {product_code}).\n\nTemperatur, tilstand, ventilatorhastighed og tænd/sluk virker fortsat. Indendørs- og udendørstemperatur er utilgængelige, og afsendelse af kommandoer er slået fra – at gætte, hvor indstillingerne ligger i et ukendt format, risikerer at skrive en sensoraflæsning tilbage til anlægget som var det en indstilling.\n\nAt tilføje understøttelse kræver ingen kode, kun tre korte optagelser fra dig. Følg den linkede vejledning, og opret en rapport; det er som regel en rettelse på én linje."
+    }
+  },
+  "exceptions": {
+    "control_failed": {
+      "message": "Kunne ikke sende kommandoen til {name}: {error}"
+    },
+    "control_rejected": {
+      "message": "{name} accepterer ikke den indstilling: {error}"
+    },
+    "no_status": {
+      "message": "Home Assistant har endnu ikke læst {name}s aktuelle tilstand og kan derfor ikke sende en kommando – hver kommando bygges ud fra anlæggets aktuelle indstillinger, så de øvrige bevares. Vent på næste opdatering, og prøv igen."
+    },
+    "layout_unknown": {
+      "message": "Styring er slået fra for {name}: dets statusformat på {length} byte genkendes ikke, så en kommando kan ikke bygges sikkert. Se reparationsnotifikationen."
+    },
+    "unsupported_value": {
+      "message": "{name} understøtter ikke {value!r} for {field}."
+    }
+  }
+}
