@@ -8,6 +8,12 @@
 _Control your Haier air conditioner from Home Assistant entirely over your own network. You sign in
 once so the integration can fetch your unit's key — after that it talks only to the AC, on your LAN._
 
+**🌐 Getting started in your language:** [Bahasa Indonesia](docs/i18n/README.id.md) ·
+[ไทย](docs/i18n/README.th.md) · [Tiếng Việt](docs/i18n/README.vi.md) ·
+[Bahasa Melayu](docs/i18n/README.ms.md)\
+_The integration's own screens are translated into 24 languages and follow whatever language you've
+set in Home Assistant. These docs are English-only; the pages above cover install and setup._
+
 <details>
 <summary><b>Table of contents</b></summary>
 
