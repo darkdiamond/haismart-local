@@ -12,7 +12,11 @@ No prior open-source project maps this uSDK-EPP local path (haier-esphome/smarta
 """
 from __future__ import annotations
 
-from .models import AttributeProfile
+import logging
+
+from .models import STD_OPERATION_MODE, STD_WIND_SPEED, AttributeProfile
+
+_LOGGER = logging.getLogger(__name__)
 
 # AAC1UKZ01 enums are now AUTHORITATIVE — from the device digital model (constraintfile)
 # `HSU-24VRRA03TF@<uPlusId>@2.0.1.signed.json` pulled from the app (see profile_from_device_config).
@@ -41,48 +45,70 @@ AAC1UKZ01 = AttributeProfile(
     min_temp=16.0,
     max_temp=30.0,
     temp_step=1.0,
+    modes_authoritative=True,   # hand-verified against this model's digital model + hardware
 )
 
-# Map the model's Chinese value descriptions -> our normalized tokens (keyword match, longest first).
-# English keywords too: descriptions are Haier's and are not guaranteed to be Chinese on every model.
-_MODE_KEYWORDS = (("制冷", "cool"), ("制热", "heat"), ("除湿", "dry"), ("送风", "fan_only"),
-                  ("通风", "fan_only"), ("智能", "auto"), ("自动", "auto"), ("舒适", "auto"),
-                  ("cool", "cool"), ("heat", "heat"), ("dehumid", "dry"), ("dry", "dry"),
-                  ("fan", "fan_only"), ("wind", "fan_only"), ("smart", "auto"),
-                  ("auto", "auto"), ("comfort", "auto"))
-_FAN_KEYWORDS = (("高", "high"), ("中", "medium"), ("低", "low"), ("自动", "auto"),
-                 ("high", "high"), ("medium", "medium"), ("middle", "medium"), ("low", "low"),
-                 ("auto", "auto"))
+# Fallback only: map a model's value DESCRIPTION -> our normalized token, for a code the STD table
+# doesn't know. Both Chinese and English, because the description language is not ours to control —
+# `HaierCloud._headers` sends `language: en-us` on the shadow endpoint that feeds the coordinator,
+# while the constraintfile CDN (no headers) serves the canonical Chinese. Matching only Chinese meant
+# the entire mechanism silently produced nothing on the path that is actually used.
+#
+# Sorted longest-first at import so a specific description wins over a substring of it ("制热" before
+# "热", "fan only" before "fan"). The old tuple claimed this ordering in its comment but never did it.
+_MODE_KEYWORDS: tuple[tuple[str, str], ...] = tuple(sorted((
+    ("制冷", "cool"), ("制热", "heat"), ("除湿", "dry"), ("送风", "fan_only"),
+    ("通风", "fan_only"), ("智能", "auto"), ("自动", "auto"), ("舒适", "auto"),
+    ("cool", "cool"), ("heat", "heat"), ("dry", "dry"), ("dehumidif", "dry"),
+    ("fan only", "fan_only"), ("fan_only", "fan_only"), ("fanonly", "fan_only"),
+    ("ventilat", "fan_only"), ("auto", "auto"), ("comfort", "auto"), ("smart", "auto"),
+    ("intelligent", "auto"),
+), key=lambda kv: -len(kv[0])))
+_FAN_KEYWORDS: tuple[tuple[str, str], ...] = tuple(sorted((
+    ("高", "high"), ("中", "medium"), ("低", "low"), ("自动", "auto"),
+    ("high", "high"), ("medium", "medium"), ("middle", "medium"), ("low", "low"),
+    ("auto", "auto"),
+), key=lambda kv: -len(kv[0])))
 
-# Fallback for a mode whose description matches no keyword at all (unexpected wording/language):
-# the STD operationMode codes are stable across the split-AC family — this is the app's own mode
-# table (0 smart / 1 cool / 2 dry / 4 heat / 6 fan). Only used when the keyword match fails, so a
-# model that spells its modes out normally still wins.
-_STD_MODE_CODES = {"0": "auto", "1": "cool", "2": "dry", "4": "heat", "6": "fan_only"}
 
+def _enum_from_datalist(data_list, std_table, keywords, *, what: str) -> dict[str, str]:
+    """Map a model's ``valueRange.dataList`` to normalized tokens.
 
-def _enum_from_datalist(data_list, keywords, code_fallback=None) -> dict[str, str]:
+    The STD code table is the PRIMARY mechanism — the codes are Haier-wide, so a model only tells us
+    which subset it supports. Description keywords are a fallback for a code the table doesn't know.
+    A code that resolves by neither is **dropped with a log line**, never guessed: an unnameable mode
+    simply doesn't appear in the entity, which is strictly better than fabricating a mapping.
+    """
     out: dict[str, str] = {}
     for item in data_list or []:
-        desc = (item.get("desc") or "").lower()
         code = str(item.get("data"))
-        for kw, tok in keywords:
-            if kw in desc:
-                out[code] = tok
-                break
-        else:
-            if code_fallback and code in code_fallback:
-                out[code] = code_fallback[code]
+        token = std_table.get(code)
+        if token is None:
+            desc = (item.get("desc") or "").casefold()
+            token = next((tok for kw, tok in keywords if kw.casefold() in desc), None)
+        if token is None:
+            _LOGGER.info(
+                "%s code %r (%r) is not a known STD code and its description did not match a known "
+                "keyword - dropping it. Please report this model so it can be mapped.",
+                what, code, item.get("desc"),
+            )
+            continue
+        out[code] = token
     return out
 
 
 def profile_from_device_config(config: dict) -> AttributeProfile:
     """Build an ``AttributeProfile`` from a Haier device digital-model / constraintfile JSON.
 
-    This is the *queryable* path the user identified: the model config (fetched during device binding,
-    or by ``getDeviceFuncNew?mode=<productCode>`` / the ``constraintfile`` resource) fully specifies each
-    attribute's ``valueRange``, so any model self-maps instead of being hand-coded. Enum descriptions are
-    Haier's (Chinese) and are matched to normalized tokens by keyword.
+    This is the *queryable* path: the model config (fetched during device binding, or by
+    ``getDeviceFuncNew?mode=<productCode>`` / the ``constraintfile`` resource) fully specifies each
+    attribute's ``valueRange``, so any model self-maps instead of being hand-coded. Codes resolve via
+    the Haier-wide STD tables first, then by description keyword, then are dropped.
+
+    Raises ``ValueError`` if no ``operationMode`` code could be resolved. This matters: it used to
+    substitute a hardcoded default map on failure, which (a) could never match the numeric codes the
+    decoder emits and (b) meant the caller's fallback-to-a-known-profile path was unreachable dead
+    code. Failing loudly hands control back to ``profile_for(product_code)``.
     """
     attrs = {a["name"]: a for a in config.get("attributes", [])}
 
@@ -98,12 +124,26 @@ def profile_from_device_config(config: dict) -> AttributeProfile:
             return dflt_min, dflt_max, dflt_step
 
     mn, mx, step = step_bounds("targetTemperature", 16.0, 30.0, 1.0)
+    modes = _enum_from_datalist(
+        datalist("operationMode"), STD_OPERATION_MODE, _MODE_KEYWORDS, what="operationMode"
+    )
+    if not modes:
+        raise ValueError(
+            "digital model yielded no usable operationMode enum "
+            f"(dataList={datalist('operationMode')!r})"
+        )
+    fans = _enum_from_datalist(
+        datalist("windSpeed"), STD_WIND_SPEED, _FAN_KEYWORDS, what="windSpeed"
+    )
+    if not fans:
+        # Fan speeds are not essential to a working thermostat, so fall back to the STD table rather
+        # than discarding an otherwise-good profile over them.
+        _LOGGER.info("digital model yielded no windSpeed enum - using the STD code table")
+        fans = dict(STD_WIND_SPEED)
     return AttributeProfile(
-        mode_values=_enum_from_datalist(datalist("operationMode"), _MODE_KEYWORDS, _STD_MODE_CODES)
-        or dict(AttributeProfile().mode_values),
-        fan_values=_enum_from_datalist(datalist("windSpeed"), _FAN_KEYWORDS)
-        or dict(AttributeProfile().fan_values),
-        min_temp=mn, max_temp=mx, temp_step=step,
+        mode_values=modes, fan_values=fans, min_temp=mn, max_temp=mx, temp_step=step,
+        # the device's own model told us which codes it supports, so this IS a capability list
+        modes_authoritative=True,
     )
 
 
@@ -196,15 +236,36 @@ AAC1UKZ01_ATTRIBUTES: tuple[str, ...] = (
     "co2Value", "totalElectricityUsed", "totalCleaningTime",
 )
 
+# AACRL2E00 ("PRO X INV-42/3PH", deviceType 0201201d) — a reverse-cycle wall-mounted split, i.e. the
+# first confirmed unit here that HEATS. Its digital model lists operationMode 0/1/2/4/6 (制热 = 4) and
+# windSpeed 1/2/3/5, verified against the live cloud shadow. Worth spelling out rather than leaning on
+# the STD defaults, because this is the hardcoded fallback used when no digital model is stored.
+AACRL2E00 = AttributeProfile(
+    mode_values={"0": "auto", "1": "cool", "2": "dry", "4": "heat", "6": "fan_only"},
+    fan_values={"1": "high", "2": "medium", "3": "low", "5": "auto"},
+    min_temp=16.0,
+    max_temp=30.0,
+    temp_step=1.0,
+    modes_authoritative=True,   # verified against this unit's digital model + live cloud shadow
+)
+
 # Registry keyed by cloud product_code / pid (usdk_os.db cloud_device.product_code / .pid).
 PROFILES: dict[str, AttributeProfile] = {
     "AAC1UKZ01": AAC1UKZ01,
     "PID_AAC1UKZ01": AAC1UKZ01,
+    "AACRL2E00": AACRL2E00,
+    "PID_AACRL2E00": AACRL2E00,
 }
 
 
 def profile_for(type_id: str | None) -> AttributeProfile:
-    """Return the AttributeProfile for a product_code/pid, or a generic default if unknown."""
+    """Return the AttributeProfile for a product_code/pid, or a generic STD default if unknown.
+
+    The default is keyed by the Haier-wide STD codes (see :data:`~.models.STD_OPERATION_MODE`), so an
+    unknown model still decodes its mode and fan correctly. It is deliberately permissive about which
+    modes exist — a unit that cannot heat will simply never report code 4 — so the caller should
+    prefer a profile derived from the device's own digital model when one is available.
+    """
     if type_id and type_id in PROFILES:
         return PROFILES[type_id]
     return AttributeProfile()

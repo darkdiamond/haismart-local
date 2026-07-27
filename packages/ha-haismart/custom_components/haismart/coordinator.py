@@ -32,6 +32,7 @@ from haismart_extractor import (
 from haismart_extractor.cloud import SEA_APP_CREDENTIALS, CloudError
 from haismart_hrdp import (
     GRSETDAC_MODEL_AUTHORIZED,
+    STATUS_LAYOUTS,
     AttributeProfile,
     async_read_status,
     async_send_op,
@@ -70,6 +71,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     ISSUE_STALE_LOCALKEY,
+    ISSUE_UNKNOWN_LAYOUT,
     READ_TIMEOUT,
     WRITE_TIMEOUT,
 )
@@ -84,8 +86,8 @@ type HaismartConfigEntry = ConfigEntry["HaismartCoordinator"]
 # Empty read cycles tolerated before probing the AC's localKey version for rotation.
 _MISSES_BEFORE_PROBE = 2
 
-# Caps on the undecodable-frame debug log (a full report is 127 bytes, so this keeps whole frames
-# while bounding the damage if some other device pushes something large).
+# Caps on the undecodable-frame debug log (the known reports are 125/127 bytes, so this keeps whole
+# frames while bounding the damage if some other device pushes something large).
 _LOG_FRAME_BYTES = 192
 _LOG_FRAME_MAX = 3
 
@@ -116,6 +118,10 @@ _MODEL_VALUE_FROM_EPP: dict[str, Callable[[int], object]] = {
     "muteStatus": _bool_code,
     "silentSleepStatus": _bool_code,
     "screenDisplayStatus": _bool_code,
+    # raw EPP value == the STD code the model lists (0 / 7), so the valueRange gate applies
+    # directly. windDirectionVertical is deliberately absent: its EPP nibble (0x0c) is NOT its
+    # STD code (8), so it cannot be validated against the model's valueRange.
+    "windDirectionHorizontal": lambda epp: epp,
 }
 
 
@@ -178,6 +184,8 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.localkey_version: int | None = entry.data.get(CONF_LOCALKEY_VERSION)
         self.last_raw_status: bytes | None = None
         self._misses = 0
+        # length of a status report we could only partially decode, or None. Drives the repair.
+        self.unknown_layout: int | None = None
         super().__init__(
             hass,
             _LOGGER,
@@ -197,23 +205,68 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise UpdateFailed(f"uSS read from {self.host} failed: {err}") from err
 
         for blob in blobs:
-            if state := parse_full_status(blob, self.profile):
+            if state := parse_full_status(blob, self.profile, self.digital_model):
                 self._misses = 0
                 self.last_raw_status = blob
+                if state.get("partial"):
+                    # Decoded, but only the layout-independent fields: this model's report
+                    # length has no confirmed layout. Keeping the blob matters -- it is exactly
+                    # what a maintainer needs, and diagnostics used to report `null` for this case.
+                    self._note_unknown_layout(blob)
+                else:
+                    self._clear_unknown_layout()
                 return state
 
         # Connected fine but nothing decoded — either the AC pushed no full report this
         # cycle (transient) or every biz payload failed the MD5 check (stale localKey).
         self._log_undecodable(blobs)
         self._misses += 1
+        # capture BEFORE the probe below resets it, or the message always reports 0
+        misses = self._misses
         if self._misses >= _MISSES_BEFORE_PROBE:
             # probe once at the threshold; if the key still matches it's a transient miss, so
             # reset the counter rather than re-probe (an extra handshake) on every later cycle.
             await self._check_localkey_rotation()
             self._misses = 0
         raise UpdateFailed(
-            f"no decodable status from {self.host} ({self._misses} consecutive misses)"
+            f"no decodable status from {self.host} ({misses} consecutive misses)"
         )
+
+    def _note_unknown_layout(self, blob: bytes) -> None:
+        """Record an unrecognised report length: log once, raise a repair, remember the blob."""
+        if self.unknown_layout == len(blob):
+            return      # already reported; do not repeat every poll
+        self.unknown_layout = len(blob)
+        _LOGGER.warning(
+            "Unrecognised Haier status report from %s: %d bytes (known: %s). Power, setpoint, "
+            "mode, fan and vertical swing were decoded; indoor/outdoor temperature and the "
+            "secondary toggles are unavailable. product_code=%s. Please report this model so the "
+            "layout can be added - see docs/new-model.md.",
+            self.host, len(blob), ", ".join(str(n) for n in sorted(STATUS_LAYOUTS)),
+            self.product_code,
+        )
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            f"{ISSUE_UNKNOWN_LAYOUT}_{self.device_id}",
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_UNKNOWN_LAYOUT,
+            translation_placeholders={
+                "name": self.config_entry.title,
+                "length": str(len(blob)),
+                "product_code": self.product_code or "unknown",
+            },
+            learn_more_url=(
+                "https://github.com/enapt/haismart-local/blob/main/docs/new-model.md"
+            ),
+        )
+
+    def _clear_unknown_layout(self) -> None:
+        if self.unknown_layout is None:
+            return
+        self.unknown_layout = None
+        ir.async_delete_issue(self.hass, DOMAIN, f"{ISSUE_UNKNOWN_LAYOUT}_{self.device_id}")
 
     def _log_undecodable(self, blobs: list[bytes]) -> None:
         """Debug-log what the AC actually sent when no status decoded — the report discriminator.
@@ -224,9 +277,14 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         * **no payloads** — the AC pushed nothing this cycle, OR every payload failed the MD5 check,
           i.e. the localKey is wrong/stale (the consecutive-miss probe below checks for rotation);
-        * **payloads present** — the localKey is GOOD and the report just isn't a layout
-          ``parse_full_status`` accepts, i.e. a model whose report differs from the verified one.
-          The frame is exactly what's needed to add support, so it's logged in full.
+        * **payloads present** — the localKey is GOOD and nothing the AC sent was a full-status
+          report at all: a frame without the ``2715`` signature, or one too short for even the
+          layout-independent fields.
+
+        Note an unrecognised report *length* does NOT reach here: ``parse_full_status`` decodes
+        those partially and :meth:`_note_unknown_layout` raises a repair, so a new model is already
+        diagnosed by name. What lands here is whatever else the AC is pushing, hence logging the
+        frames in full — they are the only way to identify it.
 
         Report bytes carry device state only, no key material (the same bytes diagnostics exports).
         """
@@ -241,7 +299,8 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
         _LOGGER.debug(
             "%s: localKey is good (%d payload(s) decrypted) but no full-status report decoded — "
-            "unrecognised report layout. Frames: %s",
+            "unrecognised frame (no 2715 signature, or shorter than the attribute vector). "
+            "Frames: %s",
             self.device_id,
             len(blobs),
             "; ".join(
@@ -270,10 +329,27 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # gated by the encoder allowlist alone.
         self._validate_against_model(changes)
 
+        if self.unknown_layout is not None:
+            # Reads degrade gracefully on an unrecognised report; writes must not. The size of the
+            # control-word block is exactly what could not be determined, so a group-set built from
+            # it could send a read-only sensor byte back to the AC as a setting.
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="layout_unknown",
+                translation_placeholders={
+                    "name": self.config_entry.title,
+                    "length": str(self.unknown_layout),
+                },
+            )
+
         def _build(baseline: bytes | None) -> bytes:
             base = baseline if baseline is not None else self.last_raw_status
             if base is None:
-                raise HomeAssistantError("no status available to seed the control command")
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="no_status",
+                    translation_placeholders={"name": self.config_entry.title},
+                )
             if baseline is not None:  # refresh the cache from the fresh in-session baseline
                 self._misses = 0
                 self.last_raw_status = baseline
@@ -295,9 +371,17 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except HomeAssistantError:
             raise
         except (ValueError, KeyError) as err:
-            raise HomeAssistantError(f"invalid control command {changes}: {err}") from err
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="control_rejected",
+                translation_placeholders={"name": self.config_entry.title, "error": str(err)},
+            ) from err
         except (OSError, RuntimeError, TimeoutError) as err:
-            raise HomeAssistantError(f"failed to send control to {self.host}: {err}") from err
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="control_failed",
+                translation_placeholders={"name": self.config_entry.title, "error": str(err)},
+            ) from err
         # The AC echoes its UPDATED state on the op's own connection (the protocol), so confirm
         # from that reply directly — instant, one fewer connection. Fall back to a read cycle only
         # if the reply carried no decodable full-status report.
@@ -311,7 +395,7 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         decoded. The AC echoes updated state on the op connection (the protocol). Also updates
         the seed baseline + miss counter so the next op/poll starts from the confirmed state."""
         for blob in reversed(reply):
-            if state := parse_full_status(blob, self.profile):
+            if state := parse_full_status(blob, self.profile, self.digital_model):
                 self.last_raw_status = blob
                 self._misses = 0
                 return state
@@ -339,7 +423,14 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # allowlist in ``set_grsetdac_field``, which is proven against real hardware.
             ok, reason = validate_write(model, name, to_model(epp), require_writable=False)
             if not ok:
-                raise HomeAssistantError(f"control rejected by the device model: {reason}")
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="control_rejected",
+                    translation_placeholders={
+                        "name": self.config_entry.title,
+                        "error": reason,
+                    },
+                )
 
     @property
     def local_key(self) -> str:

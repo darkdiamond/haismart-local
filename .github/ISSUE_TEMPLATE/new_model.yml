@@ -1,0 +1,57 @@
+name: New model report
+description: Tell us about an AC that works, or that decodes incorrectly
+labels: ["new model"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the most valuable contribution to the project, and it needs no code.
+        Please read [docs/new-model.md](https://github.com/enapt/haismart-local/blob/main/docs/new-model.md)
+        first - it explains the three captures below and why they are enough.
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: How well does it work?
+      options:
+        - Works fully - just reporting it so it can be listed
+        - Works, but some values are wrong
+        - Connects, but reports "no decodable status"
+        - Does not connect at all
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: AC model number
+    validations:
+      required: true
+  - type: input
+    id: prodno
+    attributes:
+      label: Product code
+      description: Shown in the Haier app's device details, e.g. "AACRL2E00".
+  - type: input
+    id: module
+    attributes:
+      label: Wi-Fi module and firmware
+      description: |
+        If you can find them. Firmware matters - the same model with a newer module can behave
+        differently.
+  - type: input
+    id: roomtemp
+    attributes:
+      label: Room temperature shown on the remote during capture 2
+      description: Confirms the indoor-temperature byte immediately.
+  - type: textarea
+    id: captures
+    attributes:
+      label: The three diagnostics captures
+      description: |
+        Set each state **on the remote or in the Haier app**, wait ~30 seconds, then download
+        diagnostics and attach all three files here.
+
+        1. Off
+        2. Cool, 22 C, fan low, swing off
+        3. Fan-only, fan high, swing on
+    validations:
+      required: true

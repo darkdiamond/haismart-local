@@ -1,0 +1,58 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  pytest:
+    name: pytest (all three packages)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Install dependencies
+        # Home Assistant and its pytest plugin are installed deliberately: the ha-haismart suite
+        # SKIPS ITSELF when they are missing (see packages/ha-haismart/tests/conftest.py), so
+        # without them CI would report green while never running a single integration test.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest pytest-asyncio cryptography httpx
+          python -m pip install homeassistant pytest-homeassistant-custom-component
+      - name: Run all suites
+        run: ./scripts/test.sh
+      - name: Fail if the Home Assistant suite silently skipped
+        run: |
+          cd packages/ha-haismart
+          python -m pytest -q -p no:cacheprovider --collect-only > /tmp/collected.txt
+          grep -qE "[1-9][0-9]* tests? collected" /tmp/collected.txt || {
+            echo "::error::the ha-haismart suite collected no tests - the HA plugin is missing"
+            cat /tmp/collected.txt
+            exit 1
+          }
+
+  build:
+    name: HACS build is in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Regenerate and diff
+        # custom_components/ at the repo root is generated from packages/. A PR that edits the
+        # source without re-running the build ships a component that does not match its own tests.
+        run: |
+          ./scripts/build-hacs.sh > /dev/null
+          if ! git diff --quiet -- custom_components; then
+            echo "::error::custom_components/ is stale - run scripts/build-hacs.sh and commit"
+            git diff --stat -- custom_components
+            exit 1
+          fi

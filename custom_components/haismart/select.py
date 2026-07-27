@@ -10,8 +10,10 @@ from __future__ import annotations
 from haismart_hrdp import GRSETDAC_ENUMS
 from homeassistant.components.select import SelectEntity
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from .const import DOMAIN
 from .coordinator import HaismartConfigEntry, HaismartCoordinator
 from .entity import HaismartEntity
 
@@ -28,8 +30,7 @@ async def async_setup_entry(
 
 
 class HaismartEcoSelect(HaismartEntity, SelectEntity):
-    _attr_name = "Eco"
-    _attr_icon = "mdi:leaf-circle"
+    _attr_translation_key = "eco"
     _attr_options = list(_ECO)
 
     def __init__(self, coordinator: HaismartCoordinator) -> None:
@@ -44,5 +45,13 @@ class HaismartEcoSelect(HaismartEntity, SelectEntity):
     async def async_select_option(self, option: str) -> None:
         code = _ECO.get(option)
         if code is None:
-            raise ValueError(f"unknown eco option {option!r}")
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="unsupported_value",
+                translation_placeholders={
+                    "name": self.name or "this air conditioner",
+                    "value": str(option),
+                    "field": "eco",
+                },
+            )
         await self.coordinator.async_send_control({"ecoMode": code})

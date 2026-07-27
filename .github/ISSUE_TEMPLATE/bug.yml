@@ -1,0 +1,91 @@
+name: Bug report
+description: Something is broken or behaves incorrectly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. Please search existing issues first -
+        including closed ones.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: AC model number
+      description: From the sticker on the indoor unit, e.g. "PRO X INV-42/3PH".
+    validations:
+      required: true
+  - type: input
+    id: module
+    attributes:
+      label: Wi-Fi module / product code
+      description: If known - e.g. "AACRL2E00", or the module model printed on the unit.
+  - type: dropdown
+    id: app
+    attributes:
+      label: Which app do you pair the AC with?
+      options:
+        - Haier / Haismart / Haier U+ / uHome
+        - hOn
+        - Haier China
+        - SmartHQ
+        - SmartAir2 / Smart Clima
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Integration and Home Assistant versions
+      placeholder: "integration 0.7.0, HA 2026.7.4"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Debug logs
+      description: |
+        Enable debug logging, reproduce, then paste the relevant lines.
+        ```yaml
+        logger:
+          logs:
+            custom_components.haismart: debug
+            haismart_hrdp: debug
+        ```
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: |
+        Settings -> Devices & Services -> Haismart -> three dots -> Download diagnostics, then drag
+        the file here. Account tokens and your local key are redacted automatically.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues, including closed ones.
+          required: true
+        - label: Home Assistant and the AC are on the same subnet.
+          required: true
+        - label: This is one issue, not several.
+          required: true

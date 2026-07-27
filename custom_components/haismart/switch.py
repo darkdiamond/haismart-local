@@ -24,20 +24,16 @@ class HaismartSwitchDescription(SwitchEntityDescription):
     field: str
 
 
+# Names live in strings.json via `translation_key`, and icons in icons.json, which is what makes
+# them translatable at all -- hardcoded `name=` strings can only ever be English. The `key` values
+# are unchanged, so `unique_id` and therefore existing entity ids survive.
 SWITCHES: tuple[HaismartSwitchDescription, ...] = (
+    HaismartSwitchDescription(key="strong", field="rapidMode", translation_key="strong"),
+    HaismartSwitchDescription(key="quiet", field="muteStatus", translation_key="quiet"),
+    HaismartSwitchDescription(key="health", field="healthMode", translation_key="health"),
+    HaismartSwitchDescription(key="sleep", field="silentSleepStatus", translation_key="sleep"),
     HaismartSwitchDescription(
-        key="strong", field="rapidMode", name="Strong", icon="mdi:weather-windy"
-    ),
-    HaismartSwitchDescription(key="quiet", field="muteStatus", name="Quiet", icon="mdi:volume-off"),
-    HaismartSwitchDescription(key="health", field="healthMode", name="Health", icon="mdi:leaf"),
-    HaismartSwitchDescription(
-        key="sleep", field="silentSleepStatus", name="Sleep", icon="mdi:power-sleep"
-    ),
-    HaismartSwitchDescription(
-        key="lamp",
-        field="screenDisplayStatus",
-        name="Display light",
-        icon="mdi:television-ambient-light",
+        key="lamp", field="screenDisplayStatus", translation_key="lamp"
     ),
 )
 

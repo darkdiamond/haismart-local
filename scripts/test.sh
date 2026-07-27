@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Run every package's test suite. No hardware, no network.
-# The ha-haismart suite skips cleanly unless Home Assistant + the HA pytest plugin are installed.
+# The ha-haismart suite SKIPS ITSELF unless Home Assistant + pytest-homeassistant-custom-component
+# are installed, so a green run here does not prove it ran. CI installs both and fails the job if
+# that suite collects nothing; locally, install them if you are touching the integration:
+#   pip install homeassistant pytest-homeassistant-custom-component zeroconf
 set -u
 root="$(cd "$(dirname "$0")/.." && pwd)"
 py="${PYTHON:-python3}"

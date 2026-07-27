@@ -4,6 +4,7 @@ from __future__ import annotations
 from ipaddress import ip_address
 
 import pytest
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -15,6 +16,7 @@ from custom_components.haismart.const import (
     CONF_LOCALKEY_VERSION,
     CONF_PRODUCT_CODE,
     CONF_SCAN_INTERVAL,
+    CONF_ZONE_INFO,
     DOMAIN,
 )
 
@@ -209,6 +211,17 @@ async def test_reauth_flow_updates_key_and_version(hass: HomeAssistant, mock_uss
     flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
     assert len(flows) == 1
 
+    # reauth now OFFERS to re-fetch the key rather than only demanding it, so pick the manual
+    # branch explicitly -- a menu is the whole point: the automatic path is the right default for a
+    # user who has no way to produce a 32-hex key by hand.
+    menu = await hass.config_entries.flow.async_configure(flows[0]["flow_id"])
+    assert menu["step_id"] == "reauth"
+    assert set(menu["menu_options"]) == {"reauth_cloud", "reauth_confirm"}
+    confirm = await hass.config_entries.flow.async_configure(
+        flows[0]["flow_id"], {"next_step_id": "reauth_confirm"}
+    )
+    assert confirm["step_id"] == "reauth_confirm"
+
     new_key = "ffeeddccbbaa99887766554433221100"
     result = await hass.config_entries.flow.async_configure(
         flows[0]["flow_id"], {CONF_LOCAL_KEY: new_key}
@@ -339,7 +352,12 @@ async def test_login_flow_autofetches_key_asks_only_host(hass: HomeAssistant, mo
 async def test_login_flow_falls_back_to_manual_if_gateway_fails(
     hass: HomeAssistant, mock_uss
 ) -> None:
-    """If the cloud gateway can't return the key, fall back to the manual key form (graceful)."""
+    """A failed key fetch reaches a step that explains itself and offers a retry.
+
+    It used to drop the user straight onto the manual form, which demands a 32-hex key seconds after
+    the previous step promised they would not have to paste anything -- and which they have no way
+    to obtain by hand. That was a dead end; the only way out was to abandon setup.
+    """
     from unittest.mock import AsyncMock, patch
 
     from haismart_extractor import GatewayError
@@ -350,7 +368,13 @@ async def test_login_flow_falls_back_to_manual_if_gateway_fails(
         patch("custom_components.haismart.config_flow._async_resolve_host",
               new=AsyncMock(return_value=None)),
     ])
-    assert result["step_id"] == "manual"                        # asks for the key by hand
+    assert result["step_id"] == "key_failed"
+    assert set(result["menu_options"]) == {"key_retry", "manual"}
+
+    manual = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "manual"}
+    )
+    assert manual["step_id"] == "manual"
     result2 = await hass.config_entries.flow.async_configure(
         result["flow_id"],
         {CONF_HOST: "192.168.1.50", CONF_DEVICE_ID: "A1B2C3D4E5F6", CONF_LOCAL_KEY: LOCAL_KEY},
@@ -402,7 +426,9 @@ async def test_login_flow_email_password_hands_off(hass: HomeAssistant, mock_uss
         new=AsyncMock(return_value="192.168.1.50"),
     ):
         result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_USERNAME: "me@example.com", CONF_PASSWORD: "hunter2"}
+            result["flow_id"],
+            # the country is now an explicit choice: there is no hardcoded default to fall back on
+            {CONF_USERNAME: "me@example.com", CONF_PASSWORD: "hunter2", CONF_ZONE_INFO: "66"},
         )
         assert result["step_id"] == "pick_device"
         result = await hass.config_entries.flow.async_configure(
@@ -432,7 +458,8 @@ async def test_login_flow_auth_error_shows_form(hass: HomeAssistant, mock_uss) -
         side_effect=CloudAuthError("retCode B00002-00002: bad password"),
     ):
         result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_USERNAME: "x@y.com", CONF_PASSWORD: "wrong"}
+            result["flow_id"],
+            {CONF_USERNAME: "x@y.com", CONF_PASSWORD: "wrong", CONF_ZONE_INFO: "66"},
         )
     assert result["type"] == FlowResultType.FORM
     assert result["step_id"] == "login"
@@ -523,3 +550,210 @@ async def test_multiple_devices_added_one_at_a_time(hass: HomeAssistant, mock_us
         r = await _to_picker()
         assert r["type"] == FlowResultType.ABORT
         assert r["reason"] == "all_configured"
+
+
+async def test_login_country_defaults_from_the_ha_instance(hass: HomeAssistant, mock_uss) -> None:
+    """The country field pre-selects from hass.config.country instead of a hardcoded guess.
+
+    It used to default to 66 (Thailand) for everybody, which is wrong for nearly every user, and
+    a wrong region is reported by Haier as "account is not registered" - so it reads as a bad
+    password. Where the country is unknown the field is left EMPTY on purpose: no default beats
+    a plausible-looking wrong one.
+    """
+    from custom_components.haismart.countries import default_dial_code
+
+    assert default_dial_code("PT") == "351"
+    assert default_dial_code("pt") == "351"      # case-insensitive
+    assert default_dial_code("TH") == "66"
+    assert default_dial_code(None) is None
+    assert default_dial_code("ZZ") is None
+
+    await hass.config.async_update(country="PT")
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "login"}
+    )
+    schema = result["data_schema"].schema
+    zone_key = next(k for k in schema if str(k) == CONF_ZONE_INFO)
+    assert zone_key.default() == "351", "the HA instance's own country should be pre-selected"
+
+
+async def test_login_wrong_region_gets_its_own_error(hass: HomeAssistant, mock_uss) -> None:
+    """retCode 30032 must not be collapsed into the generic 'check all three fields' message."""
+    from custom_components.haismart.config_flow import CloudAuthError, _login_error_for
+
+    wrong_region = CloudAuthError("login -> retCode 30032: Account is not registered")
+    assert _login_error_for(wrong_region) == "account_not_in_region"
+    missing = CloudAuthError("login -> retCode 10001: missing field")
+    assert _login_error_for(missing) == "missing_field"
+    bad_password = CloudAuthError("login -> retCode B00002: bad password")
+    assert _login_error_for(bad_password) == "cloud_auth"
+
+
+async def test_login_with_no_devices_aborts(hass: HomeAssistant, mock_uss) -> None:
+    """Sign-in succeeded; the account is simply empty.
+
+    Re-showing the form as an error invites an endless retype of credentials that were correct,
+    and throws away the tokens just obtained.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    cloud = MagicMock()
+    cloud.list_devices_v2 = AsyncMock(return_value=[])
+    with patch(
+        "custom_components.haismart.config_flow._async_login_cloud",
+        AsyncMock(return_value=(cloud, {})),
+    ):
+        result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"next_step_id": "login"}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_USERNAME: "me@example.com", CONF_PASSWORD: "pw", CONF_ZONE_INFO: "351"},
+        )
+    assert result["type"] == "abort"
+    assert result["reason"] == "no_devices"
+
+
+def test_every_error_and_abort_string_exists() -> None:
+    """Each errors["base"] / async_abort(reason=...) literal must resolve to a real string.
+
+    A missing key renders in the UI as the raw slug, which is invisible in tests and only ever
+    noticed by a user hitting the error path. This also catches strings left behind after the code
+    that raised them is gone.
+    """
+    import json
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "custom_components" / "haismart"
+    source = (root / "config_flow.py").read_text(encoding="utf-8")
+    strings = json.loads((root / "strings.json").read_text(encoding="utf-8"))
+
+    declared_errors = set(strings["config"]["error"])
+    declared_aborts = set(strings["config"]["abort"])
+    used_errors = set(re.findall(r'errors\["base"\]\s*=\s*"([a-z_]+)"', source))
+    used_errors |= set(re.findall(r'return "([a-z_]+)"', source))     # _login_error_for
+    used_aborts = set(re.findall(r'reason="([a-z_]+)"', source))
+
+    # HA supplies these itself; they need no local definition
+    builtin_aborts = {"already_configured", "reauth_successful", "already_in_progress"}
+
+    assert not (used_errors - declared_errors), (
+        f"config_flow raises errors with no string: {sorted(used_errors - declared_errors)}"
+    )
+    assert not (used_aborts - declared_aborts - builtin_aborts), (
+        f"config_flow aborts with no string: {sorted(used_aborts - declared_aborts)}"
+    )
+    unused = declared_errors - used_errors
+    assert not unused, f"strings.json declares errors nothing raises: {sorted(unused)}"
+
+
+def test_strings_and_english_translation_are_in_sync() -> None:
+    """en.json is the shipped copy of strings.json; drift means the UI shows stale text."""
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "custom_components" / "haismart"
+    a = json.loads((root / "strings.json").read_text(encoding="utf-8"))
+    b = json.loads((root / "translations" / "en.json").read_text(encoding="utf-8"))
+    assert a == b, "strings.json and translations/en.json have diverged"
+
+
+async def test_key_retry_succeeds_on_the_second_attempt(hass: HomeAssistant, mock_uss) -> None:
+    """The retry offered by key_failed actually re-runs the fetch and completes setup."""
+    from unittest.mock import AsyncMock, patch
+
+    from haismart_extractor import GatewayError
+
+    fetch = AsyncMock(side_effect=[GatewayError("CONNACK rc=5"), (LOCAL_KEY, 4)])
+    with patch("custom_components.haismart.config_flow._async_fetch_localkey", new=fetch):
+        result = await _drive_login_to_pick(hass, mock_uss, [
+            patch("custom_components.haismart.config_flow._async_resolve_host",
+                  new=AsyncMock(return_value="192.168.1.50")),
+        ])
+        assert result["step_id"] == "key_failed"
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"next_step_id": "key_retry"}
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_LOCAL_KEY] == LOCAL_KEY
+    assert fetch.await_count == 2
+
+
+async def test_reconfigure_changes_the_host_only_after_validating(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """A bad address must not be committed.
+
+    Re-running the manual flow with the same device id also rewrites the host, but it does so
+    BEFORE validating -- so a typo silently took a working entry offline while reporting nothing
+    more useful than "already configured".
+    """
+    entry = _entry()
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await entry.start_reconfigure_flow(hass)
+    assert result["step_id"] == "reconfigure"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "reconfigure_host"}
+    )
+
+    mock_uss.probe.side_effect = OSError("no route to host")
+    bad = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_HOST: "192.168.1.99"}
+    )
+    assert bad["errors"] == {"base": "cannot_connect"}
+    assert entry.data[CONF_HOST] != "192.168.1.99", "a rejected host must not be committed"
+
+    mock_uss.probe.side_effect = None
+    good = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_HOST: "192.168.1.77"}
+    )
+    await hass.async_block_till_done()
+    assert good["type"] == FlowResultType.ABORT
+    assert entry.data[CONF_HOST] == "192.168.1.77"
+
+
+def test_dhcp_discovery_covers_haier_appliance_ouis_only() -> None:
+    """The DHCP matcher must cover Haier's appliance OUIs, and only those.
+
+    This started as a single prefix, which meant most Haier units were never auto-discovered. It is
+    asserted here because nothing did: an earlier attempt to widen it was silently lost when the
+    script applying it aborted, and no test noticed the manifest had reverted.
+    """
+    import json
+    from pathlib import Path
+
+    manifest = json.loads(
+        (Path(__file__).resolve().parents[1] / "custom_components" / "haismart" / "manifest.json")
+        .read_text(encoding="utf-8")
+    )
+    prefixes = {entry["macaddress"].rstrip("*") for entry in manifest["dhcp"]}
+
+    # confirmed in service on working air conditioners
+    for oui in ("ACB722", "24E8CE", "0007A8"):
+        assert oui in prefixes, f"{oui} is a known-working appliance OUI"
+
+    # NOT appliances: phones, TVs and a silicon design house. A false positive here would offer a
+    # config flow for someone's Haier phone.
+    for oui, what in (
+        ("C8D779", "Haier Telecom - phones"),
+        ("B0A37E", "Haier Telecom - phones"),
+        ("DC330D", "Haier Telecom - phones (adjacent to DC330E, which IS appliances)"),
+        ("D058C0", "Haier Multimedia - TVs"),
+        ("BC2B6B", "Beijing Haier IC Design"),
+    ):
+        assert oui not in prefixes, f"{oui} ({what}) must not be matched"
+
+    # MA-M assignments: their 24-bit prefixes are shared with unrelated companies, and Home
+    # Assistant matches on prefixes, so they cannot be expressed safely.
+    for oui in ("1845B3", "1054D2"):
+        assert oui not in prefixes, f"{oui} is an MA-M block with a shared 24-bit prefix"
+
+    assert all(len(p) == 6 and p.isalnum() for p in prefixes), prefixes

@@ -24,7 +24,7 @@ async def main():
     cloud = HaierCloud(SEA_APP_CREDENTIALS)
     login = await cloud.login("you@example.com", "password", zone="66")
     creds = GatewayCreds.derive(usdk_client_id=login.client_id, access_token=login.access_token)
-    key = get_localkey_via_gateway("ACB722AABBCC", creds)
+    key = get_localkey_via_gateway(creds, "ACB722AABBCC")
     print(key)
 
 asyncio.run(main())

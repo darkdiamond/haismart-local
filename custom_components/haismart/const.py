@@ -35,6 +35,10 @@ CONF_GATEWAY_PASSWORD = "gateway_password"
 CONF_DIGITAL_MODEL = "digital_model"
 # Cloud product_code/pid (e.g. AAC1UKZ01) — selects the AttributeProfile for status decode.
 CONF_PRODUCT_CODE = "product_code"
+# Human-readable identity from the cloud device list's `extendedInfo` (prodNo/model/brand). Shown on
+# the HA device page instead of the raw product code.
+CONF_MODEL_NAME = "model_name"
+CONF_BRAND = "brand"
 # The AC's localKey version at config time (HELLO_RESP payload). The key rotates server-side;
 # a version mismatch on a later probe means the cached key is stale -> reauth.
 CONF_LOCALKEY_VERSION = "localkey_version"
@@ -48,9 +52,24 @@ WRITE_TIMEOUT = 5.0  # per-connection socket timeout for a control (grSetDAC) op
 
 MANUFACTURER = "Haier"
 
+# Haier's `deviceType` encodes the appliance class in its FIRST BYTE, as hex (from Haier's own uSDK
+# device-type enum; e.g. 0201201d -> 0x02 = split AC, 21001001 -> 0x21 = air purifier). Used to warn
+# when a picked device is not an air conditioner at all.
+AC_DEVICE_CLASSES: dict[str, str] = {
+    "02": "split AC",
+    "03": "cabinet AC",
+    "0d": "commercial AC",
+    "39": "window AC",
+}
+
 # Repairs: raised when the localKey rotated but the entry has no cloud credentials to self-heal, so
 # the user must reauth by hand. Advises adding account creds so rotation auto-refreshes in future.
 ISSUE_STALE_LOCALKEY = "stale_localkey_manual_reauth"
+
+# Repairs: the AC's status report is a length we have no confirmed layout for. Reads fall back
+# to the layout-independent fields, so the thermostat still works, but temperatures are absent
+# and control is refused rather than risking a sensor byte being written back as a control word.
+ISSUE_UNKNOWN_LAYOUT = "unknown_report_layout"
 
 # mDNS service the AC's wifi module announces (instance name = deviceId, e.g. A1B2C3D4E5F6).
 ZEROCONF_TYPE = "_cae._udp.local."

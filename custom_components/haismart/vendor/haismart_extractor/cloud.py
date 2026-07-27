@@ -134,6 +134,12 @@ class RefreshResult:
     @classmethod
     def from_response(cls, resp: dict) -> RefreshResult:
         d = resp.get("data") if isinstance(resp.get("data"), dict) else resp
+        # SEA wraps tokens under data.tokenInfo, exactly as on login. Without this unwrapping a
+        # nested response yielded access_token="" and the client then OVERWROTE its working token
+        # with the empty string, turning every later call into a 401 that the class docstring
+        # misattributes to a wrong client_id.
+        if isinstance(d.get("tokenInfo"), dict):
+            d = d["tokenInfo"]
         return cls(
             access_token=d.get("accountToken") or d.get("uhomeAccessToken") or d.get("accessToken", ""),
             refresh_token=d.get("refreshToken", ""),
@@ -192,6 +198,14 @@ class CloudDevice:
     device_type: str = ""
     uplus_id: str = ""
     online: bool = False
+    # From the device list's `extendedInfo`, which used to be discarded entirely. `prod_no` is the
+    # real product code (e.g. "AACRL2E00") — without it the integration had nothing to go on and
+    # stamped a hardcoded default on every device, so a heat-capable unit was labelled as a
+    # cooling-only one. `model` is the human-readable name ("PRO X INV-42/3PH").
+    prod_no: str = ""
+    model: str = ""
+    brand: str = ""
+    app_type_name: str = ""
 
 
 # The SE-Asia app-level identity — constants that are the same for every install (the same credential
@@ -277,7 +291,17 @@ class Response:
     text: str
 
     def json(self) -> dict:
-        return json.loads(self.text) if self.text else {}
+        """Parse the body, raising :class:`CloudError` rather than ``JSONDecodeError``.
+
+        A captive portal or proxy that answers HTTP 200 with HTML would otherwise raise a bare
+        ``ValueError`` that escapes every ``except CloudError`` in the callers.
+        """
+        if not self.text:
+            return {}
+        try:
+            return json.loads(self.text)
+        except ValueError as err:
+            raise CloudError(f"response was not JSON (HTTP {self.status}): {self.text[:200]}") from err
 
 
 Transport = Callable[[Request], Awaitable[Response]]
@@ -289,7 +313,7 @@ HTTP_TIMEOUT = 15.0
 # blocks — Home Assistant flags exactly that ("blocking call to load_verify_locations inside the event
 # loop"), so the client is built in a worker thread and then reused instead of per request. Hosts that
 # already own a client should inject it with :func:`httpx_transport` and skip this entirely.
-_CLIENTS: "weakref.WeakKeyDictionary[Any, Any]" = weakref.WeakKeyDictionary()
+_CLIENTS: weakref.WeakKeyDictionary[Any, Any] = weakref.WeakKeyDictionary()
 _CLIENTS_LOCK = asyncio.Lock()
 
 
@@ -444,6 +468,7 @@ class HaierCloud:
         out: list[CloudDevice] = []
         for d in (resp.get("data") or {}).get("deviceInfos", []):
             b = d.get("baseInfo") or {}
+            e = d.get("extendedInfo") or {}
             out.append(
                 CloudDevice(
                     device_id=b.get("deviceId", ""),
@@ -451,28 +476,54 @@ class HaierCloud:
                     device_type=b.get("deviceType", ""),
                     uplus_id=b.get("wifiType", ""),
                     online=bool(b.get("isOnline")),
+                    prod_no=str(e.get("prodNo") or ""),
+                    model=str(e.get("model") or ""),
+                    brand=str(e.get("brand") or ""),
+                    app_type_name=str(e.get("appTypeName") or ""),
                 )
             )
         return out
 
+    @staticmethod
+    def _checked(resp: dict, what: str) -> dict:
+        """Raise if the envelope reports a non-success ``retCode``.
+
+        ``post``/``get`` only validate the HTTP status, so without this a caller happily treats
+        ``{"retCode": "21016", "retInfo": "Token not created by this terminal"}`` as a device model.
+        """
+        ret = str(resp.get("retCode", "00000"))
+        if ret not in ("00000", "", "None"):
+            raise CloudError(f"{what} -> retCode {ret}: {resp.get('retInfo')}")
+        return resp
+
     # -- known-good call --
     async def get_device_7d(self, device_id: str) -> dict:
         """7-day device data (TLV device-data query)."""
-        return await self.post(self.domains.uws, "/rcs/device/7d/query", {"deviceId": device_id})
+        return self._checked(
+            await self.post(self.domains.uws, "/rcs/device/7d/query", {"deviceId": device_id}),
+            "device 7d",
+        )
 
     # -- device list (paths confirmed; response shape to confirm on first call) --
     async def list_user_devices(self) -> dict:
         """The account's devices — `/dcs/device-service-2c/get/user/device-list` (confirmed)."""
-        return await self.post(self.domains.uhome, DEVICE_LIST_PATH, {})
+        return self._checked(
+            await self.post(self.domains.uhome, DEVICE_LIST_PATH, {}), "user device list"
+        )
 
     async def list_devices(self) -> dict:
         """Alt device list — the aggregate-query endpoint (also present)."""
-        return await self.post(self.domains.uhome, DEVICE_LIST_PATH_ALT, {})
+        return self._checked(
+            await self.post(self.domains.uhome, DEVICE_LIST_PATH_ALT, {}), "device list (alt)"
+        )
 
     async def get_device_model(self, device_id: str) -> dict:
         """Device capability model — `/dcs/.../model-info/find/info` (confirmed). Drives the
         STD attribute set the HA integration exposes (analogous to banto6's `devdigitalmodels`)."""
-        return await self.post(self.domains.uhome, DEVICE_MODEL_PATH, {"deviceId": device_id})
+        return self._checked(
+            await self.post(self.domains.uhome, DEVICE_MODEL_PATH, {"deviceId": device_id}),
+            "device model",
+        )
 
     async def get_device_config(self, model: str, uplus_id: str, *, version: str = "") -> dict:
         """Fetch the **device digital model / constraintfile** — the queryable per-model attribute spec
@@ -561,6 +612,10 @@ class HaierCloud:
                 f"refreshToken -> retCode {resp.get('retCode')}: {resp.get('retInfo')}"
             )
         result = RefreshResult.from_response(resp)
+        if not result.access_token:
+            raise CloudError(
+                f"refreshToken succeeded but returned no access token: {str(resp)[:200]}"
+            )
         self.access_token = result.access_token
         return result
 

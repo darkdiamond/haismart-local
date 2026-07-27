@@ -18,6 +18,10 @@ REAL_HELLO = bytes.fromhex(
     "0000ea60002a01000000000100000000" + DEV.encode().hex() + "00" * 20
 )
 REAL_HELLO_RESP = bytes.fromhex("0000ea610012010000000001000089fc0000000100000004")
+# The HELLO_RESP payload a real AC sends: status=1 (session accepted) + its localKey version. The
+# fakes below used an EMPTY payload, which parses as status=0 -> a refusal. That unrealistic fixture
+# is why nothing noticed that no call site ever checked the status field.
+HELLO_RESP_OK = bytes.fromhex("0000000100000004")
 # real decrypted status blob (127B), typeId AAC1UKZ01
 REAL_STATUS = bytes.fromhex(
     "00002715000000004e56010000030200000401" + "00" * 66
@@ -117,7 +121,8 @@ def test_parse_full_status_confirmed_fields():
     #   swing on (byte[93]=0x08)
     # secondary toggles read back from the same grSetDAC word block: both units have only the display
     # light on (lamp=True); health/strong/quiet/sleep off and eco=0 (computed from the real blobs)
-    _toggles = {"health": False, "strong": False, "quiet": False, "sleep": False, "lamp": True, "eco": 0}
+    _toggles = {"health": False, "strong": False, "quiet": False, "sleep": False, "lamp": True, "eco": 0,
+                "swing_horizontal": True}  # both units report word4 bits0-2 == 7 (left-right auto)
     d = uss.parse_full_status(REAL_STATUS_DOWN, prof)
     assert d == {"power": True, "target_temperature": 24.0, "current_temperature": 30.0,
                  "operation_mode": "6", "wind_speed": "3", "swing_vertical": True,
@@ -297,7 +302,9 @@ def test_set_grsetdac_field_reproduces_real_transitions(before, name, value, aft
 
 def test_set_grsetdac_field_refuses_unmapped_fields():
     words = bytes.fromhex("0c0422000201000708000000")
-    for unmapped in ("energySavingStatus", "lightStatus", "windDirectionHorizontal", "notARealAttr"):
+    # NB windDirectionHorizontal used to be listed here; it is now a confirmed field (word4 bits
+    # 0-2), so an invalid VALUE for it raises ValueError instead — see the test below.
+    for unmapped in ("energySavingStatus", "lightStatus", "notARealAttr"):
         with pytest.raises(KeyError):
             uss.set_grsetdac_field(words, unmapped, 1)
 
@@ -319,13 +326,23 @@ def test_set_grsetdac_field_refuses_unobserved_values():
 # Our reference units are cooling-only, so heat (operationMode 4) is not in the observed allowlist.
 # A device whose model declares the code may use it; a device that doesn't, may not.
 def test_model_declared_mode_is_encodable_but_not_by_default():
+    """A code with no evidence behind it needs the device's own model to authorize it.
+
+    (Heat, 4, is no longer such a code — it is hardware-confirmed and sits in the base allowlist.
+    Mode 3 is: it is a valid 3-bit value that no unit we have seen uses, which is exactly the shape
+    of an unverified code, so it stands in for "a capability only this model claims".)
+    """
     auto = bytes.fromhex("0800050002030007080c0000")            # operationMode = 0 (auto)
     with pytest.raises(ValueError):
-        uss.set_grsetdac_field(auto, "operationMode", 4)        # unauthorized: no model says so
-    heat = uss.set_grsetdac_field(auto, "operationMode", 4, model_values={0, 1, 2, 4, 6})
-    assert heat == bytes.fromhex("0800850002030007080c0000")     # mode bits (word2 b13) = 4
+        uss.set_grsetdac_field(auto, "operationMode", 3)        # unauthorized: no model says so
+    mode3 = uss.set_grsetdac_field(auto, "operationMode", 3, model_values={0, 1, 2, 3, 6})
+    assert mode3 == bytes.fromhex("0800650002030007080c0000")    # mode bits (word2 b13) = 3
     # everything else in the group-set is untouched
-    assert uss.set_grsetdac_field(heat, "operationMode", 0, model_values={0, 4}) == auto
+    assert uss.set_grsetdac_field(mode3, "operationMode", 0, model_values={0, 3}) == auto
+    # heat needs no model to authorize it any more: confirmed on real heat-capable hardware
+    assert uss.set_grsetdac_field(auto, "operationMode", 4) == bytes.fromhex(
+        "0800850002030007080c0000"
+    )
 
 
 def test_model_values_cannot_widen_device_specific_fields_or_overflow():
@@ -385,7 +402,7 @@ async def test_send_op_returns_promptly_after_reply_burst(monkeypatch):
     import time
 
     SESSION = 0x1234
-    hello_resp = uss.encode_message(uss.INFO_HELLO_RESP, 1, b"", session=SESSION)
+    hello_resp = uss.encode_message(uss.INFO_HELLO_RESP, 1, HELLO_RESP_OK, session=SESSION)
     done_resp = uss.encode_message(
         uss.INFO_HELLO_DONE_RESP, 2, uss.biz_encrypt(0, (547).to_bytes(4, "big"), LOCALKEY),
         flag=uss.FLAG_BIZ_ENCRYPTED, session=SESSION,
@@ -437,7 +454,7 @@ async def test_send_op_build_frame_seeds_from_in_session_push(monkeypatch):
     import asyncio
 
     SESSION = 0x1234
-    hello_resp = uss.encode_message(uss.INFO_HELLO_RESP, 1, b"", session=SESSION)
+    hello_resp = uss.encode_message(uss.INFO_HELLO_RESP, 1, HELLO_RESP_OK, session=SESSION)
     done_resp = uss.encode_message(
         uss.INFO_HELLO_DONE_RESP, 2, uss.biz_encrypt(0, (547).to_bytes(4, "big"), LOCALKEY),
         flag=uss.FLAG_BIZ_ENCRYPTED, session=SESSION,
@@ -468,3 +485,207 @@ async def test_send_op_build_frame_seeds_from_in_session_push(monkeypatch):
 
     await uss.async_send_op("1.2.3.4", DEV, LOCALKEY, build_frame=build, counter=1, timeout=1.0)
     assert seen["baseline"] == REAL_STATUS_DOWN   # the in-session push became the seed baseline
+
+
+# --- 125-byte report variant (deviceType 0201201d) ----------------------------
+# A real decrypted full-status report from a unit whose report carries 2 attribute bytes fewer than the
+# AAC1UKZ01 one: 5 grSetDAC control words instead of 6, so every sensor offset after the word block
+# shifts by -2. Captured live and cross-checked field-by-field against the cloud digital-model shadow
+# (targetTemperature=24, operationMode=1, windSpeed=5, onOffStatus=false, indoorTemperature=25.0,
+# screenDisplayStatus=true, windDirectionVertical=8 -> swing on). Carries no secret: the canonical
+# all-zero CAE report prefix, no deviceId embedded.
+STATUS_125 = bytes.fromhex(
+    "00002715000000004e5601000003020000040100000000000000000000000000"
+    "0000000000000000000000000000000000000000000000000000000000000000"
+    "0000000000000000000000000000002dffff2a000000000000066d01080c250f"
+    "020000070000323760100003000000000000000000000000002fe4c19f"
+)
+
+
+def test_status_layout_recognises_both_report_lengths():
+    assert len(STATUS_125) == 125
+    assert uss.status_layout(REAL_STATUS_DOWN) == uss.StatusLayout(
+        words=6, indoor_temp=104, outdoor_temp=106
+    )
+    assert uss.status_layout(STATUS_125) == uss.StatusLayout(
+        words=5, indoor_temp=102, outdoor_temp=104
+    )
+    # the 78-byte CAE envelope is identical across variants; only the inner EPP frame length differs
+    assert STATUS_125[:78] == uss.CAE_REPORT_PREFIX
+    assert int.from_bytes(STATUS_125[78:80], "big") == len(STATUS_125) - 80
+
+
+def test_status_layout_rejects_non_status_blobs():
+    assert uss.status_layout(b"") is None
+    assert uss.status_layout(bytes(126)) is None            # unknown length
+    assert uss.status_layout(bytes(4)) is None              # right length field, wrong magic
+    # a blob of a known length but the wrong container type is not a status report
+    assert uss.status_layout(b"\x00\x00\x99\x99" + bytes(121)) is None
+
+
+def test_parse_full_status_decodes_the_125_byte_variant():
+    from haismart_hrdp import profile_for
+
+    prof = profile_for("AAC1UKZ01")
+    d = uss.parse_full_status(STATUS_125, prof)
+    assert d == {
+        "power": False, "target_temperature": 24.0, "current_temperature": 25.0,
+        "operation_mode": "1", "wind_speed": "5", "swing_vertical": True,
+        "swing_horizontal": True, "outdoor_temperature": 32.0,
+        "health": False, "strong": False, "quiet": False, "sleep": False, "lamp": True, "eco": 0,
+        "mode": "cool", "fan_mode": "auto",
+    }
+
+
+def test_parse_full_status_partially_decodes_an_unknown_report_length():
+    """An unrecognised length yields the layout-INDEPENDENT fields, flagged, never a silent {}.
+
+    Bytes 92-97 are grSetDAC words 1-3, which sit before anything the word count shifts, so a brand
+    new model still gets a working thermostat. Everything whose offset depends on the word count is
+    omitted rather than guessed.
+    """
+    for blob in (STATUS_125 + b"\x00", STATUS_125[:-1]):   # odd span -> not derivable
+        assert uss.derive_status_layout(blob) is None
+        state = uss.parse_full_status(blob)
+        assert state["partial"] is True and state["layout"] == "unknown"
+        # layout-independent fields still decode, and agree with the real 125-byte report
+        assert state["power"] is False
+        assert state["target_temperature"] == 24.0
+        assert state["operation_mode"] == "1"
+        assert state["wind_speed"] == "5"
+        assert state["swing_vertical"] is True
+        # ...and nothing that depends on the word count is invented
+        for absent in ("current_temperature", "outdoor_temperature", "swing_horizontal", "eco"):
+            assert absent not in state
+
+
+def test_parse_full_status_rejects_blobs_that_are_not_status_reports():
+    assert uss.parse_full_status(b"") == {}
+    assert uss.parse_full_status(b"\x00\x00\x99\x99" + bytes(121)) == {}   # wrong container type
+    # right magic but too short to hold even the layout-independent fields
+    assert uss.parse_full_status(b"\x00\x00\x27\x15" + bytes(90)) == {}
+
+
+def test_grsetdac_baseline_tracks_the_report_layout():
+    """The baseline is words 1..N for the blob's layout — never a fixed 12 bytes.
+
+    On the 125-byte variant byte 102 is the read-only indoorTemperature. A hardcoded ``[92:104]``
+    slice would pull it (and byte 103) into the word block, so a group-set would write a sensor
+    reading back to the AC as if it were control word 6.
+    """
+    assert uss.grsetdac_baseline_from_status(REAL_STATUS_DOWN) == REAL_STATUS_DOWN[92:104]
+    base = uss.grsetdac_baseline_from_status(STATUS_125)
+    assert base == STATUS_125[92:102]
+    assert len(base) == 10
+    # the invariant that matters: the word block must end at or before the first sensor byte
+    for blob in (REAL_STATUS_DOWN, STATUS_125):
+        layout = uss.status_layout(blob)
+        assert layout.baseline.stop <= layout.indoor_temp
+    assert STATUS_125[uss.status_layout(STATUS_125).indoor_temp] == 50   # 50 / 2 == 25.0 degC
+
+
+def test_grsetdac_baseline_rejects_an_unknown_length():
+    with pytest.raises(ValueError, match="not a full-status report"):
+        uss.grsetdac_baseline_from_status(STATUS_125[:-1])
+
+
+def test_read_grsetdac_field_on_the_125_variant():
+    # words 1..5 sit at the same offsets on both variants, so the confirmed field map applies as-is
+    assert uss.read_grsetdac_field(STATUS_125, "targetTemperature") == 24 - 16
+    assert uss.read_grsetdac_field(STATUS_125, "operationMode") == 1
+    assert uss.read_grsetdac_field(STATUS_125, "windSpeed") == 5
+    assert uss.read_grsetdac_field(STATUS_125, "onOffStatus") == 0
+    assert uss.read_grsetdac_field(STATUS_125, "screenDisplayStatus") == 1
+    assert uss.read_grsetdac_field(STATUS_125, "windDirectionVertical") == 0x0C
+    assert uss.read_grsetdac_field(STATUS_125, "ecoMode") == 0
+
+
+def test_set_grsetdac_field_round_trips_on_a_125_baseline():
+    base = uss.grsetdac_baseline_from_status(STATUS_125)
+    words = uss.set_grsetdac_field(base, "targetTemperature", 26 - 16)
+    assert len(words) == len(base)                     # group-set keeps the word count
+    assert words[2:] == base[2:]                       # only word 1's high byte moved
+    # re-reading through a synthetic report confirms the encode/decode agree
+    patched = STATUS_125[:92] + words + STATUS_125[92 + len(words):]
+    assert uss.read_grsetdac_field(patched, "targetTemperature") == 26 - 16
+    assert uss.parse_full_status(patched)["target_temperature"] == 26.0
+    # ...and the untouched fields are preserved by the group-set
+    assert uss.parse_full_status(patched)["operation_mode"] == "1"
+    assert uss.parse_full_status(patched)["lamp"] is True
+
+
+# --- independent horizontal swing axis (windDirectionHorizontal) ---------------
+def test_horizontal_swing_reads_on_both_report_variants():
+    """word4 bits 0-2 carry left-right swing on both the 127- and 125-byte reports."""
+    for blob in (REAL_STATUS_DOWN, REAL_STATUS_UP, STATUS_125):
+        assert uss.read_grsetdac_field(blob, "windDirectionHorizontal") == 7
+        assert uss.parse_full_status(blob)["swing_horizontal"] is True
+        # the axis must not be confused with ecoMode, which shares word 4 (bits 3-5)
+        assert uss.read_grsetdac_field(blob, "ecoMode") == 0
+
+
+def test_horizontal_swing_is_independent_of_vertical_and_eco():
+    """Confirmed by a single-attribute app sweep: only word4 bits 0-2 move.
+
+    Ground truth captured live — toggling ONLY left-right swing in the vendor app took word4 from
+    0x0007 to 0x0000 while byte 93 (vertical) stayed 0x0c and ecoMode stayed 0.
+    """
+    base = uss.grsetdac_baseline_from_status(STATUS_125)
+    off = uss.set_grsetdac_field(base, "windDirectionHorizontal", 0x00)
+    assert (off[6] << 8) | off[7] == 0x0000
+    assert off[:6] == base[:6] and off[8:] == base[8:]      # nothing outside word 4 moved
+
+    fixed = STATUS_125[:92] + off + STATUS_125[92 + len(off):]
+    state = uss.parse_full_status(fixed)
+    assert state["swing_horizontal"] is False
+    assert state["swing_vertical"] is True                  # vertical axis untouched
+    assert state["eco"] == 0                                # eco untouched
+    assert state["target_temperature"] == 24.0
+
+    back = uss.set_grsetdac_field(off, "windDirectionHorizontal", 0x07)
+    assert back == base                                     # round-trips exactly
+
+
+def test_horizontal_swing_refuses_unobserved_values():
+    base = uss.grsetdac_baseline_from_status(STATUS_125)
+    for bad in (1, 3, 8, 12, 15):
+        # refused either as an unobserved value or (for 8/12/15) by the 3-bit width check
+        with pytest.raises(ValueError, match="observed-valid|does not fit"):
+            uss.set_grsetdac_field(base, "windDirectionHorizontal", bad)
+
+
+def test_horizontal_swing_enum_matches_the_digital_model_codes():
+    # the model lists exactly two codes: 0 = fixed, 7 = auto. Unlike windDirectionVertical, the raw
+    # EPP value equals the STD code, which is why the coordinator can gate it against valueRange.
+    assert uss.GRSETDAC_ENUMS["windDirectionHorizontal"] == {"off": 0x00, "on": 0x07}
+    assert uss.GRSETDAC_ALLOWED_VALUES["windDirectionHorizontal"] == {0x00, 0x07}
+    assert uss.GRSETDAC_FIELDS["windDirectionHorizontal"] == (4, 0, 3)
+
+
+def test_check_hello_resp_rejects_a_refused_session():
+    """status != 1 must raise, not sail on into hello_done and an empty status collect.
+
+    A refused session used to be indistinguishable from a stale localKey or a dead network, because
+    only `info_type` was checked; worse, the write path would send a control op into it.
+    """
+    refused = uss.decode_message(
+        uss.encode_message(uss.INFO_HELLO_RESP, 1, bytes.fromhex("0000000000000004"), session=0x1234)
+    )
+    with pytest.raises(RuntimeError, match="rejected the handshake"):
+        uss.check_hello_resp(refused)
+
+    wrong_type = uss.decode_message(uss.encode_message(uss.INFO_HELLO_DONE_RESP, 1, HELLO_RESP_OK))
+    with pytest.raises(RuntimeError, match="unexpected reply"):
+        uss.check_hello_resp(wrong_type)
+
+    ok = uss.decode_message(uss.encode_message(uss.INFO_HELLO_RESP, 1, HELLO_RESP_OK, session=0x1234))
+    assert uss.check_hello_resp(ok).localkey_version == 4
+
+
+def test_split_messages_stops_on_a_desynchronised_frame():
+    """A declared length under 0x0A cannot be a frame; yielding it would raise inside a collect loop."""
+    good = uss.encode_message(uss.INFO_HELLO_RESP, 1, HELLO_RESP_OK, session=1)
+    assert len(list(uss.split_messages(good))) == 1
+    bad = good + b"\x00\x00\xea\x61\x00\x03rubbish"
+    assert list(uss.split_messages(bad)) == [good]     # the good frame survives, the junk is dropped
+    assert list(uss.split_messages(b"\x00\x00\xea\x61\x00\x00")) == []   # total==0, must not loop

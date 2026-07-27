@@ -4,6 +4,7 @@ Golden vectors are the real  live capture (both keys byte-matched the getLocalKe
 and decrypted the live ACs)."""
 import base64
 import json
+import time
 
 import pytest
 
@@ -262,3 +263,71 @@ def test_creds_topic_helpers() -> None:
     c = _creds()
     assert c.pub_topic == f"Client/{CLIENT_ID}/Business/Up"
     assert c.sub_topic == f"Client/{CLIENT_ID}/Business/Down"
+
+
+# --- regressions for the errNo/sn/deadline bugs -------------------------------
+
+def _make_error_response(sn: str, err_no: int) -> bytes:
+    """A REAL gateway error response: it carries errNo and NO key at all."""
+    inner = json.dumps({"sn": str(sn), "errNo": err_no}, separators=(",", ":"))
+    outer = {"type": "devLocalkey", "data": base64.b64encode(inner.encode()).decode(), "tokens": []}
+    return json.dumps(outer, separators=(",", ":")).encode()
+
+
+class KeylessErrorMqtt(FakeMqtt):
+    """Answers every request with a keyless errNo response."""
+
+    def __init__(self, err_no: int = 21016) -> None:
+        super().__init__(answer=False)
+        self.err_no_only = err_no
+
+    def publish(self, topic: str, payload: str) -> None:
+        self.pubs.append((topic, payload))
+        sn = json.loads(base64.b64decode(json.loads(payload)["data"]))["sn"]
+        self._queue.append(("Client/x/Business/Down", _make_error_response(sn, self.err_no_only)))
+
+
+def test_get_localkey_surfaces_a_keyless_error_response() -> None:
+    """The gateway's own reason must reach the caller.
+
+    The errNo check used to sit INSIDE ``if inner.get("key")``, and a real error response has no key -
+    so every genuine failure (expired token, device not bound, wrong terminal) fell through to a bare
+    "no response within Ns" and the user went debugging TLS and firewalls. Every pre-existing fixture
+    included a key, which is exactly why a passing suite never caught it.
+    """
+    conn = KeylessErrorMqtt(21016)
+    with pytest.raises(GatewayError, match="errNo=21016"):
+        GatewayClient(_creds(), connect=lambda _c: conn).get_localkey(UP_DEV, timeout=0.5)
+    assert conn.closed is True          # the connection is still released on the error path
+
+
+def test_get_localkeys_shares_one_deadline_and_never_reuses_an_sn() -> None:
+    """Batch fetch must not cost N*timeout, and two devices must never collide on one sn.
+
+    The sn used to be ``time_ms + len(out)`` where ``len(out)`` only advanced on SUCCESS, so devices
+    requested in the same millisecond after a failure shared an sn - and a late reply for one could be
+    stored against the other, leaving a device holding another's key (an unfixable stale-key loop).
+    """
+    sns: list[str] = []
+
+    class Recorder(FakeMqtt):
+        def __init__(self) -> None:
+            super().__init__(answer=False)
+
+        def publish(self, topic: str, payload: str) -> None:
+            sns.append(json.loads(base64.b64decode(json.loads(payload)["data"]))["sn"])
+
+    t0 = time.monotonic()
+    out = GatewayClient(_creds(), connect=lambda _c: Recorder()).get_localkeys(
+        [UP_DEV, "ACB722AABBCC", "ACB722001122"], timeout=0.3
+    )
+    elapsed = time.monotonic() - t0
+    assert out == {}
+    assert len(sns) == 3 and len(set(sns)) == 3, f"sn collision: {sns}"
+    # one shared deadline: a per-device deadline would have taken ~3x this
+    assert elapsed < 0.3 * 2.5, f"took {elapsed:.2f}s for 3 devices at timeout=0.3"
+
+
+def test_get_localkeys_still_returns_the_devices_that_did_answer() -> None:
+    keys = GatewayClient(_creds(), connect=lambda _c: FakeMqtt()).get_localkeys([UP_DEV])
+    assert keys == {UP_DEV: LocalKey(key=UP_KEY, version=UP_VER)}

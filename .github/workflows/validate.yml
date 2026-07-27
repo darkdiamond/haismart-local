@@ -1,0 +1,36 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 4 * * 1"
+
+permissions: {}
+
+jobs:
+  hassfest:
+    name: Hassfest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    name: HACS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: hacs/action@main
+        with:
+          category: integration
+          # No `ignore:` here on purpose. hacs/default requires the action to pass with no disabled
+          # checks, and the `brands` check is satisfied by the icons this repo ships in
+          # custom_components/haismart/brand/ -- since HA 2026.3 the brands repository auto-closes
+          # custom-integration PRs, so shipping them inline is the only supported route.

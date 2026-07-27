@@ -35,6 +35,25 @@ deviceIds/keys — never a real device `localKey`, MAC, or LAN address (see [SEC
   `scripts/build-hacs.sh` and commit the regenerated component.
 - Match existing style; keep changes focused; add tests for behaviour changes.
 
+## Adding a new AC model
+
+Most models need **no code at all** — the integration derives its behaviour from the device's own
+digital model. When something does need a change, the work is almost always one table entry, and the
+hard part is the evidence, not the patch.
+
+Start from [`docs/new-model.md`](docs/new-model.md): three status captures in known states pin the
+control-word block and identify the sensor bytes by elimination. If you have the unit in front of
+you, that is the fastest path to a correct layout.
+
+Two rules make this safe:
+
+- **Reads may be widened on inference; writes may not.** An unknown report length is decoded as far
+  as the layout-independent fields allow and flagged `partial`. `STATUS_LAYOUTS` stays the allowlist
+  for writes, because a wrong word count sends a sensor byte back to the AC as a control word.
+- **A new grSetDAC field or value needs an observation, not a deduction.** The way to get one is a
+  single-attribute sweep: change exactly one setting in the vendor app and diff the report. That is
+  how every field in the current map was established, and how horizontal swing and heat were added.
+
 ## New AC models
 
 Per-model semantics live in `packages/haismart-hrdp/src/haismart_hrdp/profiles.py` as an

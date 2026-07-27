@@ -68,7 +68,8 @@ async def test_setup_creates_entities_from_status(hass: HomeAssistant, mock_uss)
     assert climate.attributes["temperature"] == 24.0
     assert climate.attributes["fan_mode"] == "auto"
     assert climate.attributes["swing_mode"] == "vertical"
-    assert climate.attributes["swing_modes"] == ["off", "vertical"]
+    # both axes are independent fields on the wire but are presented as ONE conventional control
+    assert climate.attributes["swing_modes"] == ["off", "vertical", "horizontal", "both"]
     assert climate.attributes["min_temp"] == 16.0
     assert climate.attributes["max_temp"] == 30.0
     assert climate.attributes["fan_modes"] == ["high", "medium", "low", "auto"]
@@ -176,12 +177,33 @@ async def test_heat_mode_offered_and_sent_when_the_model_declares_it(
     assert _sent_field(mock_uss.send, "onOffStatus") == 1
 
 
-async def test_heat_refused_on_a_unit_that_does_not_declare_it(
+async def test_heat_refused_on_a_unit_whose_model_excludes_it(
     hass: HomeAssistant, mock_uss
 ) -> None:
-    """The flip side of the guard: with no model declaring heat (cooling-only / manual onboarding),
-    the encoder still refuses the code rather than firing an unauthorized value at the AC."""
-    entry = await _setup(hass)  # no digital model stored
+    """The flip side of the guard: a unit whose digital model does not list heat must not get it.
+
+    Heat itself is hardware-confirmed now, so the ENCODER accepts code 4 unconditionally; what keeps
+    it off a cooling-only unit is the model gate in the coordinator plus the mode list the entity
+    builds from that same model.
+    """
+    import json as _json
+
+    from custom_components.haismart.const import CONF_DIGITAL_MODEL
+
+    cooling_only = _json.dumps({
+        "attributes": [{
+            "name": "operationMode", "writable": True,
+            "valueRange": {"type": "LIST", "dataList": [
+                {"data": "0", "desc": "智能/自动/舒适"}, {"data": "1", "desc": "制冷"},
+                {"data": "2", "desc": "除湿"}, {"data": "6", "desc": "送风"},
+            ]},
+        }]
+    })
+    entry = _entry(**{CONF_DIGITAL_MODEL: cooling_only})
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
     assert "heat" not in hass.states.get(CLIMATE).attributes["hvac_modes"]
     with pytest.raises(HomeAssistantError):
         await entry.runtime_data.async_send_control({"operationMode": 4})
@@ -489,6 +511,10 @@ async def test_diagnostics_redacts_secrets(hass: HomeAssistant, mock_uss) -> Non
     diag = await async_get_config_entry_diagnostics(hass, entry)
 
     assert diag["entry"][CONF_LOCAL_KEY] == "**REDACTED**"
+    # The deviceId is NOT redacted: it is just the Wi-Fi MAC, it is not a credential, and it is
+    # needed to interpret a status capture. What must never appear is the account credentials -
+    # `refresh_token` in particular is durable and reusable, so leaking it in the file users are
+    # told to attach to issues would hand over the whole Haier account.
     assert diag["entry"][CONF_DEVICE_ID] == "**REDACTED**"
     assert diag["localkey_version"] == 4
     assert diag["state"]["mode"] == "cool"
@@ -636,7 +662,7 @@ async def test_model_rejects_out_of_range_temperature(hass: HomeAssistant, mock_
     from homeassistant.exceptions import HomeAssistantError
 
     entry = await _setup_with_model(hass, _LOCKED_MODEL)
-    with pytest.raises(HomeAssistantError, match="device model"):
+    with pytest.raises(HomeAssistantError, match="does not accept that setting"):
         await entry.runtime_data.async_send_control({"targetTemperature": 30 - 16})
     assert mock_uss.send.await_count == 0  # rejected before any write
 
@@ -647,7 +673,7 @@ async def test_model_rejects_unsupported_enum(hass: HomeAssistant, mock_uss) -> 
 
     entry = await _setup_with_model(hass, _LOCKED_MODEL)
     # dry (2) passes the capture allowlist, but the model lists only cool -> the model vetoes it
-    with pytest.raises(HomeAssistantError, match="device model"):
+    with pytest.raises(HomeAssistantError, match="does not accept that setting"):
         await entry.runtime_data.async_send_control({"operationMode": 2})
     assert mock_uss.send.await_count == 0
 
@@ -707,7 +733,7 @@ async def test_model_valuerange_still_enforced_when_writable_bypassed(
     from homeassistant.exceptions import HomeAssistantError
 
     entry = await _setup_with_model(hass, _REAL_SHAPE_MODEL)
-    with pytest.raises(HomeAssistantError, match="device model"):
+    with pytest.raises(HomeAssistantError, match="does not accept that setting"):
         await entry.runtime_data.async_send_control({"targetTemperature": 40 - 16})
     assert mock_uss.send.await_count == 0
 
@@ -750,11 +776,100 @@ async def test_localkey_backup_sensor_exposes_key_when_enabled(
     assert st.attributes[CONF_LOCALKEY_VERSION] == 4
 
 
+async def test_unknown_report_layout_degrades_and_reports(hass: HomeAssistant, mock_uss) -> None:
+    """An unrecognised report length must work partially, say so, and refuse to write.
+
+    Before, it decoded to nothing and surfaced as "no decodable status" - indistinguishable from a
+    stale key - while diagnostics reported a null blob, i.e. the one artefact needed to fix it was
+    discarded. Now: the layout-independent fields still drive the thermostat, a repair explains the
+    situation, and control is refused rather than guessing where the control words end.
+    """
+    from homeassistant.exceptions import HomeAssistantError
+    from homeassistant.helpers import issue_registry as ir
+
+    from custom_components.haismart.const import ISSUE_UNKNOWN_LAYOUT
+
+    # a real 125-byte report with one byte appended -> an odd span, so not derivable
+    mock_uss.read.return_value = [mock_uss.frame + b"\x00"]
+    await _setup(hass)
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    coordinator = entry.runtime_data
+
+    state = coordinator.data
+    assert state["partial"] is True and state["layout"] == "unknown"
+    # the thermostat still works ...
+    assert "power" in state and "target_temperature" in state and "operation_mode" in state
+    # ... and nothing whose offset depends on the word count was invented
+    assert "current_temperature" not in state
+    assert "outdoor_temperature" not in state
+
+    # the blob is RETAINED, which is what a maintainer needs
+    assert coordinator.last_raw_status == mock_uss.frame + b"\x00"
+    assert coordinator.unknown_layout == len(mock_uss.frame) + 1
+
+    issues = ir.async_get(hass)
+    assert issues.async_get_issue(DOMAIN, f"{ISSUE_UNKNOWN_LAYOUT}_{coordinator.device_id}")
+
+    # writing is refused, with a reason rather than a stack trace
+    with pytest.raises(HomeAssistantError, match="not recognised"):
+        await coordinator.async_send_control({"onOffStatus": 1})
+
+
+async def test_diagnostics_carry_what_a_new_model_report_needs(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """Diagnostics must be sufficient to add a layout without a second round-trip."""
+    from custom_components.haismart.diagnostics import (
+        async_get_config_entry_diagnostics,
+    )
+
+    entry = await _setup(hass)
+    diag = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert diag["report"]["length"] == len(mock_uss.frame)
+    assert diag["report"]["unknown_layout"] is None
+    assert 125 in diag["report"]["known_lengths"] and 127 in diag["report"]["known_lengths"]
+    assert diag["report"]["layout"]["resolved"] is True
+    assert diag["report"]["layout"]["verified"] is True
+    assert diag["last_raw_status"] == mock_uss.frame.hex()
+
+
+async def test_control_errors_are_translated_and_name_the_device(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """Control failures must read as sentences, not as raw Python.
+
+    They used to surface as `failed to send control to 192.168.1.50: [Errno 113] No route to host`
+    and `control rejected by the device model: ...` — untranslatable, and written for whoever wrote
+    the code rather than whoever is holding the phone.
+    """
+    from homeassistant.exceptions import HomeAssistantError
+
+    await _setup(hass)
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    coordinator = entry.runtime_data
+
+    mock_uss.send.side_effect = OSError("[Errno 113] No route to host")
+    with pytest.raises(HomeAssistantError) as err:
+        await coordinator.async_send_control({"onOffStatus": 1})
+
+    assert err.value.translation_domain == DOMAIN
+    assert err.value.translation_key == "control_failed"
+    message = str(err.value)
+    assert entry.title in message, "the message should say WHICH air conditioner"
+    assert "No route to host" in message, "the underlying cause is still worth keeping"
+
+
 async def test_undecodable_frames_are_debug_logged(
     hass: HomeAssistant, mock_uss, freezer, caplog
 ) -> None:
-    """A read that decrypts but doesn't decode must log the frame, so a bug report from an
-    unsupported model is actionable: the localKey is fine and only the layout is unknown."""
+    """A read that decrypts but doesn't decode must log the frame, so the report is actionable:
+    the localKey is fine and what the AC pushed simply isn't a status report.
+
+    An unrecognised report *length* is a different case entirely here — it decodes partially and
+    raises a repair (see `test_unknown_report_layout_degrades_and_reports`), so it never reaches
+    this log.
+    """
     await _setup(hass)
     caplog.set_level("DEBUG", logger="custom_components.haismart.coordinator")
     caplog.clear()
@@ -764,7 +879,7 @@ async def test_undecodable_frames_are_debug_logged(
     await _tick(hass, freezer)
 
     assert "localKey is good" in caplog.text
-    assert "unrecognised report layout" in caplog.text
+    assert "unrecognised frame" in caplog.text
     assert "len=64 00002799" in caplog.text  # length + the frame itself, for offset work
 
 

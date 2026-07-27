@@ -16,7 +16,8 @@ SE-Asia ACs). No Home Assistant coupling, no cloud.
 
 ```python
 import haismart_hrdp as h
-blob = next(b for b in h.read_status("192.168.1.50", "ACB722AABBCC", "<localKey>") if len(b) == 127)
+blobs = h.read_status("192.168.1.50", "ACB722AABBCC", "<localKey>")
+blob = next(b for b in blobs if h.derive_status_layout(b) is not None)
 print(h.parse_full_status(blob, h.profile_for("AAC1UKZ01")))
 ```
 

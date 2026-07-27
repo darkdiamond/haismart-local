@@ -46,6 +46,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import secrets
 import socket
 import ssl
@@ -182,7 +183,7 @@ class GatewayCreds:
         username_body: str | None = None,
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
-    ) -> "GatewayCreds":
+    ) -> GatewayCreds:
         """Build fully-derived creds — no stored username/password needed.
 
         ``client_id = MD5(usdk_client_id + "_" + package)`` and the ``username``/``password`` pair is
@@ -233,6 +234,9 @@ class MqttConnection:
 ConnectionFactory = Callable[[GatewayCreds], MqttConnection]
 
 
+_LOGGER = logging.getLogger(__name__)
+
+
 class GatewayError(Exception):
     pass
 
@@ -249,57 +253,88 @@ class GatewayClient:
     ) -> None:
         self.creds = creds
         self._connect = connect or _tls_connect
+        # Monotonic request counter. This used to be `time_ms + len(out)`, where `len(out)` only
+        # advanced on SUCCESS — so two devices requested in the same millisecond after a failure got
+        # the SAME sn, and a late reply for one could be stored against the other. A device holding
+        # another device's key fails its MD5 check forever, presenting as an unfixable stale key.
+        self._sn = int(time.time() * 1000)
+
+    def _next_sn(self) -> str:
+        self._sn += 1
+        return str(self._sn % 1_000_000_000)
+
+    def _request_keys(
+        self, conn: MqttConnection, device_ids: list[str], timeout: float
+    ) -> tuple[dict[str, LocalKey], dict[str, str]]:
+        """Publish one request per device, then collect replies against a SINGLE deadline.
+
+        Returns ``(keys, failures)``. Both public methods share this, so they can no longer disagree
+        about what a valid response looks like — the batch path previously omitted the ``errNo`` check
+        entirely and used a per-device deadline, making a bad token take ``N * timeout`` seconds.
+        """
+        pending: dict[str, str] = {}
+        for device_id in device_ids:
+            sn = self._next_sn()
+            pending[sn] = device_id
+            conn.publish(
+                self.creds.pub_topic,
+                localkey_request_payload(device_id, self.creds.access_token, sn=sn),
+            )
+        keys: dict[str, LocalKey] = {}
+        failures: dict[str, str] = {}
+        deadline = time.time() + timeout
+        while pending and time.time() < deadline:
+            for _topic, pay in conn.poll(0.5):
+                inner = parse_localkey_response(pay)
+                sn = str(inner.get("sn"))
+                device_id = pending.get(sn)
+                if device_id is None:
+                    continue        # not ours, or already answered
+                # Check errNo BEFORE the key. It used to be nested INSIDE `if inner.get("key")`, but a
+                # real error response carries no key at all - so every genuine failure (expired token,
+                # device not bound, wrong terminal) fell through to a bare "no response within Ns",
+                # discarding the reason the gateway had just given us.
+                err = _as_int(inner.get("errNo")) or 0
+                if err:
+                    failures[device_id] = f"gateway errNo={err}"
+                elif inner.get("key"):
+                    keys[device_id] = LocalKey(
+                        key=str(inner["key"]), version=_as_int(inner.get("vers"))
+                    )
+                else:
+                    failures[device_id] = "gateway returned neither a key nor an errNo"
+                pending.pop(sn, None)
+        for sn, device_id in pending.items():
+            failures.setdefault(device_id, f"no localKey response within {timeout}s")
+        return keys, failures
 
     def get_localkey(self, device_id: str, *, timeout: float = 8.0) -> LocalKey:
         """Fetch ``device_id``'s current localKey. Raises :class:`GatewayError` on no/failed response."""
         conn = self._connect(self.creds)
         try:
             conn.subscribe(self.creds.sub_topic)
-            sn = str(int(time.time() * 1000) % 1_000_000_000)
-            conn.publish(
-                self.creds.pub_topic,
-                localkey_request_payload(device_id, self.creds.access_token, sn=sn),
-            )
-            deadline = time.time() + timeout
-            while time.time() < deadline:
-                for _topic, pay in conn.poll(0.5):
-                    inner = parse_localkey_response(pay)
-                    if inner.get("key") and str(inner.get("sn")) == sn:
-                        if int(inner.get("errNo", 0)) != 0:
-                            raise GatewayError(f"gateway errNo={inner['errNo']} for {device_id}")
-                        return LocalKey(key=str(inner["key"]), version=_as_int(inner.get("vers")))
-            raise GatewayError(f"no localKey response for {device_id} within {timeout}s")
+            keys, failures = self._request_keys(conn, [device_id], timeout)
         finally:
             conn.close()
+        if device_id in keys:
+            return keys[device_id]
+        raise GatewayError(f"{failures.get(device_id, 'no localKey response')} for {device_id}")
 
     def get_localkeys(self, device_ids: list[str], *, timeout: float = 8.0) -> dict[str, LocalKey]:
-        """Fetch several devices' localKeys over one connection (skips ones that don't answer)."""
-        out: dict[str, LocalKey] = {}
+        """Fetch several devices' localKeys over one connection.
+
+        Devices that fail are omitted, but the reason is logged rather than silently swallowed, so a
+        short result set can be explained (offline vs not bound vs token rejected).
+        """
         conn = self._connect(self.creds)
         try:
             conn.subscribe(self.creds.sub_topic)
-            for device_id in device_ids:
-                sn = str((int(time.time() * 1000) + len(out)) % 1_000_000_000)
-                conn.publish(
-                    self.creds.pub_topic,
-                    localkey_request_payload(device_id, self.creds.access_token, sn=sn),
-                )
-                deadline = time.time() + timeout
-                while time.time() < deadline:
-                    got = False
-                    for _topic, pay in conn.poll(0.5):
-                        inner = parse_localkey_response(pay)
-                        if inner.get("key") and str(inner.get("sn")) == sn:
-                            out[device_id] = LocalKey(
-                                key=str(inner["key"]), version=_as_int(inner.get("vers"))
-                            )
-                            got = True
-                            break
-                    if got:
-                        break
+            keys, failures = self._request_keys(conn, list(device_ids), timeout)
         finally:
             conn.close()
-        return out
+        for device_id, reason in failures.items():
+            _LOGGER.warning("localKey fetch failed for %s: %s", device_id, reason)
+        return keys
 
 
 def get_localkey_via_gateway(
@@ -342,39 +377,80 @@ class _TlsMqttConnection(MqttConnection):  # pragma: no cover - needs network
     """Raw MQTT 3.1.1 over TLS. Deliberately dependency-free (stdlib ``ssl`` only)."""
 
     def __init__(self, creds: GatewayCreds) -> None:
+        # Verified TLS. This channel carries the account accessToken (in the publish body) and the
+        # device localKey (in the reply), so `CERT_NONE` handed both to anyone able to intercept the
+        # connection - silently, with no warning. The host presents a valid public DigiCert
+        # certificate for its own name, so verification simply works; there is nothing to trade off.
+        # A caller that genuinely needs different behaviour can inject its own ConnectionFactory.
         ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        raw = socket.create_connection((creds.host, creds.port), timeout=10)
-        self.ss = ctx.wrap_socket(raw, server_hostname=creds.host)
-        vh = b"\x00\x04MQTT\x04" + bytes([0x02 | 0x80 | 0x40]) + struct.pack(">H", 60)
-        body = vh + _mqtt_field(creds.client_id) + _mqtt_field(creds.username) + _mqtt_field(creds.password)
-        self.ss.sendall(b"\x10" + _encode_len(len(body)) + body)
-        r = self.ss.recv(16)
-        rc = r[3] if len(r) > 3 else -1
-        if rc != 0:
-            self.ss.close()
-            raise GatewayError(f"CONNACK rc={rc} (creds rejected/stale)")
+        self.ss: ssl.SSLSocket | None = None
         self._pid = 0
         self._buf = b""
+        self._subacked: set[int] = set()
+        self._publishes: list[tuple[str, bytes]] = []
+        raw = socket.create_connection((creds.host, creds.port), timeout=10)
+        try:
+            self.ss = ctx.wrap_socket(raw, server_hostname=creds.host)
+        except Exception:
+            raw.close()     # wrap_socket does not own `raw` until it succeeds
+            raise
+        try:
+            vh = b"\x00\x04MQTT\x04" + bytes([0x02 | 0x80 | 0x40]) + struct.pack(">H", 60)
+            body = (vh + _mqtt_field(creds.client_id) + _mqtt_field(creds.username)
+                    + _mqtt_field(creds.password))
+            self.ss.sendall(b"\x10" + _encode_len(len(body)) + body)
+            # Read until a whole CONNACK is in hand. Taking `r[3]` off a single recv reported
+            # "rc=-1 (creds rejected/stale)" for a merely fragmented packet, sending users to
+            # re-authenticate when their credentials were fine.
+            ack = b""
+            while len(ack) < 4:
+                chunk = self.ss.recv(4 - len(ack))
+                if not chunk:
+                    raise GatewayError("gateway closed the connection before CONNACK")
+                ack += chunk
+            if ack[0] != 0x20:
+                raise GatewayError(f"expected CONNACK, got packet type {ack[0] >> 4}")
+            if ack[3] != 0:
+                raise GatewayError(f"CONNACK rc={ack[3]} (creds rejected/stale)")
+        except Exception:
+            self.close()    # otherwise every failed attempt leaks an fd until "too many open files"
+            raise
 
-    def subscribe(self, topic: str) -> None:
+    def subscribe(self, topic: str, *, timeout: float = 5.0) -> None:
+        """Subscribe and WAIT for the SUBACK before returning.
+
+        The caller publishes immediately after subscribing. Without this wait the broker could process
+        the publish's response before the subscription existed, so the reply went nowhere and the
+        result was an intermittent, unreproducible "no localKey response within 8s".
+        """
         self._pid += 1
-        body = struct.pack(">H", self._pid) + _mqtt_field(topic) + b"\x00"
+        pid = self._pid
+        body = struct.pack(">H", pid) + _mqtt_field(topic) + b"\x00"
         self.ss.sendall(b"\x82" + _encode_len(len(body)) + body)
+        deadline = time.monotonic() + timeout
+        while pid not in self._subacked and time.monotonic() < deadline:
+            # any PUBLISH arriving early is buffered by _drain, not dropped
+            self._drain(min(0.5, max(0.05, deadline - time.monotonic())))
+        if pid not in self._subacked:
+            raise GatewayError(f"no SUBACK for {topic!r} within {timeout}s")
 
     def publish(self, topic: str, payload: str) -> None:
         body = _mqtt_field(topic) + payload.encode()
         self.ss.sendall(b"\x30" + _encode_len(len(body)) + body)
 
     def poll(self, timeout: float) -> list[tuple[str, bytes]]:
-        out: list[tuple[str, bytes]] = []
+        """Return PUBLISH payloads, including any buffered while waiting for a SUBACK."""
+        return self._drain(timeout)
+
+    def _drain(self, timeout: float) -> list[tuple[str, bytes]]:
+        out: list[tuple[str, bytes]] = self._publishes
+        self._publishes = []
         self.ss.settimeout(timeout)
         try:
             d = self.ss.recv(8192)
             if d:
                 self._buf += d
-        except (TimeoutError, socket.timeout):
+        except TimeoutError:
             return out
         while len(self._buf) >= 2:
             mult = 1
@@ -397,7 +473,9 @@ class _TlsMqttConnection(MqttConnection):  # pragma: no cover - needs network
             t = self._buf[0]
             pkt = self._buf[i:total]
             self._buf = self._buf[total:]
-            if (t >> 4) == 3:  # PUBLISH
+            if (t >> 4) == 9 and len(pkt) >= 2:  # SUBACK
+                self._subacked.add((pkt[0] << 8) | pkt[1])
+            elif (t >> 4) == 3:  # PUBLISH
                 tl = (pkt[0] << 8) | pkt[1]
                 topic = pkt[2 : 2 + tl].decode("latin1")
                 qos = (t >> 1) & 3
@@ -406,6 +484,8 @@ class _TlsMqttConnection(MqttConnection):  # pragma: no cover - needs network
         return out
 
     def close(self) -> None:
+        if self.ss is None:
+            return
         try:
             self.ss.close()
         except OSError:

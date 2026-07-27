@@ -10,6 +10,8 @@ from typing import Any
 
 from haismart_hrdp import GRSETDAC_ENUMS
 from homeassistant.components.climate import (
+    SWING_BOTH,
+    SWING_HORIZONTAL,
     SWING_OFF,
     SWING_VERTICAL,
     ClimateEntity,
@@ -18,8 +20,10 @@ from homeassistant.components.climate import (
 )
 from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from .const import DOMAIN
 from .coordinator import HaismartConfigEntry, HaismartCoordinator
 from .entity import HaismartEntity
 
@@ -56,7 +60,10 @@ class HaismartClimate(HaismartEntity, ClimateEntity):
         | ClimateEntityFeature.TURN_ON
         | ClimateEntityFeature.TURN_OFF
     )
-    _attr_swing_modes = [SWING_OFF, SWING_VERTICAL]
+    # The two axes are independent fields on the wire (vertical = word1 low nibble, horizontal =
+    # word4 bits 0-2), but they are presented as ONE control with the conventional four-way choice,
+    # matching how other AC integrations expose swing.
+    _attr_swing_modes = [SWING_OFF, SWING_VERTICAL, SWING_HORIZONTAL, SWING_BOTH]
     _enable_turn_on_off_backwards_compatibility = False
 
     def __init__(self, coordinator: HaismartCoordinator) -> None:
@@ -67,8 +74,17 @@ class HaismartClimate(HaismartEntity, ClimateEntity):
         seen: list[HVACMode] = [HVACMode.OFF]
         for token in profile.mode_values.values():
             hvac = _MODE_TO_HVAC.get(token)
-            if hvac is not None and hvac not in seen:
-                seen.append(hvac)
+            if hvac is None or hvac in seen:
+                continue
+            # `mode_values` doubles as the DECODE table, so the generic fallback lists every
+            # mode the protocol defines in order to name whatever the unit reports. That is not
+            # a capability
+            # list: offering Heat on a cooling-only unit gives the user a button that does nothing.
+            # Only advertise the full set when the profile came from this device's own digital model
+            # (or a hand-verified per-model profile).
+            if token == "heat" and not profile.modes_authoritative:
+                continue
+            seen.append(hvac)
         self._attr_hvac_modes = seen
         fans: list[str] = []
         for token in profile.fan_values.values():
@@ -107,10 +123,17 @@ class HaismartClimate(HaismartEntity, ClimateEntity):
 
     @property
     def swing_mode(self) -> str | None:
-        swing = self._state.get("swing_vertical")
-        if swing is None:
+        vertical = self._state.get("swing_vertical")
+        horizontal = self._state.get("swing_horizontal")
+        if vertical is None and horizontal is None:
             return None
-        return SWING_VERTICAL if swing else SWING_OFF
+        if vertical and horizontal:
+            return SWING_BOTH
+        if vertical:
+            return SWING_VERTICAL
+        if horizontal:
+            return SWING_HORIZONTAL
+        return SWING_OFF
 
     def _mode_code(self, token: str | None) -> int | None:
         """Raw operationMode code for a normalized token, from the DEVICE'S own profile first.
@@ -143,7 +166,15 @@ class HaismartClimate(HaismartEntity, ClimateEntity):
         token = _HVAC_TO_MODE.get(hvac_mode)
         mode_val = self._mode_code(token)
         if mode_val is None:
-            raise ValueError(f"unsupported hvac_mode {hvac_mode}")
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="unsupported_value",
+                translation_placeholders={
+                    "name": self.name or "this air conditioner",
+                    "value": str(hvac_mode),
+                    "field": "mode",
+                },
+            )
         # turning on and selecting the mode in one group-set
         changes: dict[str, int] = {"onOffStatus": 1, "operationMode": mode_val}
         # This unit SILENTLY REJECTS fan-only mode combined with fan=auto (verified on hardware: the
@@ -171,16 +202,28 @@ class HaismartClimate(HaismartEntity, ClimateEntity):
             fan_mode = _FAN_ONLY_DEFAULT_SPEED
         fan_val = self._fan_code(fan_mode)
         if fan_val is None:
-            raise ValueError(f"unsupported fan_mode {fan_mode}")
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="unsupported_value",
+                translation_placeholders={
+                    "name": self.name or "this air conditioner",
+                    "value": str(fan_mode),
+                    "field": "fan speed",
+                },
+            )
         await self.coordinator.async_send_control({"windSpeed": fan_val})
 
     async def async_set_swing_mode(self, swing_mode: str) -> None:
-        on = swing_mode == SWING_VERTICAL
+        # Both axes travel in ONE grSetDAC group-set, so off -> both can never land as a
+        # half-applied state, and picking one axis explicitly turns the other off.
+        vertical = swing_mode in (SWING_VERTICAL, SWING_BOTH)
+        horizontal = swing_mode in (SWING_HORIZONTAL, SWING_BOTH)
+        v_enum = GRSETDAC_ENUMS["windDirectionVertical"]
+        h_enum = GRSETDAC_ENUMS["windDirectionHorizontal"]
         await self.coordinator.async_send_control(
             {
-                "windDirectionVertical": GRSETDAC_ENUMS["windDirectionVertical"][
-                    "on" if on else "off"
-                ]
+                "windDirectionVertical": v_enum["on" if vertical else "off"],
+                "windDirectionHorizontal": h_enum["on" if horizontal else "off"],
             }
         )
 
