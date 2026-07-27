@@ -41,6 +41,45 @@ def make_status_frame(
     return bytes(frame)
 
 
+def heat_capable_digital_model() -> dict:
+    """A digital model like a heat-pump AC's: the reference unit's attributes plus operationMode 4
+    (heat), which our own cooling-only hardware doesn't declare. The model is what authorizes heat,
+    so this is the fixture for "does a unit that HAS heat get to use it".
+    """
+    return {
+        "attributes": [
+            {
+                "name": "operationMode", "writable": True,
+                "valueRange": {"type": "LIST", "dataList": [
+                    {"data": "0", "desc": "智能/自动/舒适"},
+                    {"data": "1", "desc": "制冷"},
+                    {"data": "2", "desc": "除湿"},
+                    {"data": "4", "desc": "制热"},
+                    {"data": "6", "desc": "送风"},
+                ]},
+            },
+            {
+                "name": "windSpeed", "writable": True,
+                "valueRange": {"type": "LIST", "dataList": [
+                    {"data": "1", "desc": "高"}, {"data": "2", "desc": "中"},
+                    {"data": "3", "desc": "低"}, {"data": "5", "desc": "自动"},
+                ]},
+            },
+            {
+                "name": "targetTemperature", "writable": True,
+                "valueRange": {"type": "STEP", "dataStep": {
+                    "minValue": "16", "maxValue": "30", "step": "1"}},
+            },
+            {
+                "name": "onOffStatus", "writable": True,
+                "valueRange": {"type": "LIST", "dataList": [
+                    {"data": "false", "desc": "关"}, {"data": "true", "desc": "开"},
+                ]},
+            },
+        ]
+    }
+
+
 if _HA_AVAILABLE:
     from unittest.mock import DEFAULT, AsyncMock, patch
 

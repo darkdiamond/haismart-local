@@ -64,6 +64,46 @@ def test_validate_write_against_model():
     assert "indoorTemperature" not in w and "outdoorTemperature" not in w
 
 
+def _with_heat(config: dict) -> dict:
+    """The real cooling-only model, plus operationMode 4 (heat) — i.e. a heat-pump unit's model."""
+    for attr in config["attributes"]:
+        if attr["name"] == "operationMode":
+            attr["valueRange"]["dataList"].insert(3, {"data": "4", "desc": "制热"})
+    return config
+
+
+def test_model_enum_codes_reports_declared_values():
+    from haismart_hrdp import model_enum_codes
+    cfg = json.loads(_DEVCONFIG.read_text())
+    assert model_enum_codes(cfg, "operationMode") == {0, 1, 2, 6}   # cooling-only: no heat
+    assert model_enum_codes(cfg, "windSpeed") == {1, 2, 3, 5}
+    assert model_enum_codes(_with_heat(cfg), "operationMode") == {0, 1, 2, 4, 6}
+    # bools (LIST of 'false'/'true') and unknown/read-only-range attrs carry no numeric codes
+    assert model_enum_codes(cfg, "screenDisplayStatus") == set()
+    assert model_enum_codes(cfg, "targetTemperature") == set()
+    assert model_enum_codes(cfg, "notARealAttribute") == set()
+
+
+def test_heat_mode_self_maps_from_a_heat_capable_model():
+    # A heat-pump unit's own model is what teaches the profile its heat code (nothing hardcoded).
+    p = profile_from_device_config(_with_heat(json.loads(_DEVCONFIG.read_text())))
+    assert p.mode_values == {"0": "auto", "1": "cool", "2": "dry", "4": "heat", "6": "fan_only"}
+    assert p.std_mode("heat") == "4" and p.normalized_mode("4") == "heat"
+
+
+def test_mode_enum_falls_back_to_std_codes_for_unrecognised_descriptions():
+    # Descriptions are Haier's and not guaranteed to be Chinese; English wording still maps...
+    english = {"attributes": [{"name": "operationMode", "valueRange": {"type": "LIST", "dataList": [
+        {"data": "1", "desc": "Cooling"}, {"data": "4", "desc": "Heating"},
+        {"data": "6", "desc": "Fan"}]}}]}
+    assert profile_from_device_config(english).mode_values == {
+        "1": "cool", "4": "heat", "6": "fan_only"}
+    # ...and a description that matches nothing falls back to the standard split-AC code table.
+    blank = {"attributes": [{"name": "operationMode", "valueRange": {"type": "LIST", "dataList": [
+        {"data": "1", "desc": ""}, {"data": "4"}, {"data": "9", "desc": "???"}]}}]}
+    assert profile_from_device_config(blank).mode_values == {"1": "cool", "4": "heat"}
+
+
 def test_profile_from_real_device_config():
     # the queryable digital model (constraintfile) should self-derive the same authoritative enums
     config = json.loads(_DEVCONFIG.read_text())

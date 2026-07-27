@@ -25,7 +25,7 @@ import hashlib
 import random
 import socket
 import struct
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -345,6 +345,8 @@ GRSETDAC_FIELDS = {
 
 # Allowed raw EPP values per field — the encoder REFUSES anything else, so we never fire a code the app
 # was not observed to send (temperature is range-checked instead). Bools accept {0,1} implicitly.
+# Values our own units don't have (e.g. heat, absent on a cooling-only AC) can additionally be
+# authorized per device by that device's own digital model — see :data:`GRSETDAC_MODEL_AUTHORIZED`.
 GRSETDAC_ALLOWED_VALUES = {
     "operationMode": {0, 1, 2, 6},
     "windSpeed":     {1, 2, 3, 5},
@@ -352,28 +354,56 @@ GRSETDAC_ALLOWED_VALUES = {
     "ecoMode":               {0, 5, 6, 7},   # off / three levels (5/6/7)
 }
 
+# Fields whose value space the DEVICE'S OWN digital model may extend beyond the observed set above
+# (pass the model's codes as ``model_values``). Both are plain STD enums that the model describes
+# attribute-for-attribute (``valueRange`` LIST) and whose STD code IS the raw EPP value — the wire
+# model maps stdValue -> eppValue 1:1 for them — so a mode a heat-pump unit has and ours doesn't is
+# taken from that unit's model rather than guessed. The device-specific fields are deliberately NOT
+# here: no model attribute describes ``windDirectionVertical``'s 0x0c toggle or this unit's
+# repurposed 3-bit ``ecoMode``, so those stay pinned to the observed values alone.
+GRSETDAC_MODEL_AUTHORIZED = frozenset({"operationMode", "windSpeed"})
+
 GRSETDAC_ENUMS = {  # semantic token -> raw EPP value, for the multi-value fields
-    "operationMode": {"auto": 0, "cool": 1, "dry": 2, "fan_only": 6},
+    # operationMode 4 = heat: not present on our cooling-only units, so it is NOT in the observed
+    # allowlist above — it comes from the app's own AC mode table (0 smart / 1 cool / 2 dry / 4 heat /
+    # 6 fan) and is only encodable when the device's digital model declares it (model_values).
+    "operationMode": {"auto": 0, "cool": 1, "dry": 2, "heat": 4, "fan_only": 6},
     "windSpeed":     {"high": 1, "medium": 2, "low": 3, "auto": 5},
     "windDirectionVertical": {"off": 0x00, "on": 0x0c},
     "ecoMode":               {"off": 0, "level1": 5, "level2": 6, "level3": 7},  # level<->code order TBD
 }
 
 
-def set_grsetdac_field(words: bytes, name: str, epp_value: int) -> bytes:
+def set_grsetdac_field(
+    words: bytes, name: str, epp_value: int, *, model_values: Collection[int] | None = None
+) -> bytes:
     """Return the grSetDAC data-word bytes ``words`` with packed field ``name`` set to ``epp_value``
     (the raw EPP value — e.g. targetTemperature is degC-16). Only CONFIRMED, fire-safe fields in
     :data:`GRSETDAC_FIELDS` are accepted, and only observed-valid values (:data:`GRSETDAC_ALLOWED_VALUES`
     / the 16..30 temp range / 0..1 for bools) — anything else raises (per "don't fire what you can't map").
     The op is a group-set, so ``words`` should be a real current-state baseline (from a read) so every
-    other packed attribute is preserved — this flips just the one field."""
+    other packed attribute is preserved — this flips just the one field.
+
+    ``model_values``: the raw codes this specific device's digital model declares for ``name``
+    (``valueRange`` LIST). For the fields in :data:`GRSETDAC_MODEL_AUTHORIZED` they widen the
+    allowlist, so a capability our own units lack — heat mode being the case in point — is authorized
+    by the device's own published model instead of a guessed constant. Ignored for every other field.
+    """
     if name not in GRSETDAC_FIELDS:
         raise KeyError(f"{name!r} is not a confirmed grSetDAC field — refusing to encode (unmapped)")
     wi, shift, width = GRSETDAC_FIELDS[name]
+    if not 0 <= epp_value < (1 << width):
+        # would silently truncate into the neighbouring attributes' bits
+        raise ValueError(f"{name}={epp_value} does not fit its {width}-bit field")
     allowed = GRSETDAC_ALLOWED_VALUES.get(name)
     if allowed is not None:
+        if model_values and name in GRSETDAC_MODEL_AUTHORIZED:
+            allowed = set(allowed) | {int(v) for v in model_values}
         if epp_value not in allowed:
-            raise ValueError(f"{name}={epp_value} is not an observed-valid value {sorted(allowed)}")
+            raise ValueError(
+                f"{name}={epp_value} is neither an observed-valid value {sorted(allowed)} "
+                "nor declared by the device's digital model"
+            )
     elif name == "targetTemperature":
         if not 0 <= epp_value <= 14:               # 16..30 degC
             raise ValueError("targetTemperature epp must be 0..14 (16..30 degC)")

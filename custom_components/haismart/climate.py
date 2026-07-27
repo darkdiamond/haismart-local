@@ -112,12 +112,36 @@ class HaismartClimate(HaismartEntity, ClimateEntity):
             return None
         return SWING_VERTICAL if swing else SWING_OFF
 
+    def _mode_code(self, token: str | None) -> int | None:
+        """Raw operationMode code for a normalized token, from the DEVICE'S own profile first.
+
+        The profile is built from the device's digital model, so its code is authoritative for
+        this unit — that is what makes modes our reference hardware lacks (heat) work: the code
+        comes from the model, not from a constant. The static map is only the fallback for a device
+        with no model (manual onboarding), where the profile's keys aren't numeric.
+        """
+        if token is None:
+            return None
+        code = self.coordinator.profile.std_mode(token)
+        if code is not None and code.lstrip("-").isdigit():
+            return int(code)
+        return GRSETDAC_ENUMS["operationMode"].get(token)
+
+    def _fan_code(self, token: str | None) -> int | None:
+        """Raw windSpeed code for a normalized token — model-declared first, as ``_mode_code``."""
+        if token is None:
+            return None
+        code = self.coordinator.profile.std_fan(token)
+        if code is not None and code.lstrip("-").isdigit():
+            return int(code)
+        return GRSETDAC_ENUMS["windSpeed"].get(token)
+
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         if hvac_mode == HVACMode.OFF:
             await self.coordinator.async_send_control({"onOffStatus": 0})
             return
         token = _HVAC_TO_MODE.get(hvac_mode)
-        mode_val = GRSETDAC_ENUMS["operationMode"].get(token) if token else None
+        mode_val = self._mode_code(token)
         if mode_val is None:
             raise ValueError(f"unsupported hvac_mode {hvac_mode}")
         # turning on and selecting the mode in one group-set
@@ -127,7 +151,9 @@ class HaismartClimate(HaismartEntity, ClimateEntity):
         # concrete speed, so substitute one when the current fan is auto/unknown. The digital model
         # doesn't express this cross-attribute rule — it's observed device behaviour.
         if hvac_mode == HVACMode.FAN_ONLY and self.fan_mode in (None, "auto"):
-            changes["windSpeed"] = GRSETDAC_ENUMS["windSpeed"][_FAN_ONLY_DEFAULT_SPEED]
+            fallback = self._fan_code(_FAN_ONLY_DEFAULT_SPEED)
+            if fallback is not None:
+                changes["windSpeed"] = fallback
         await self.coordinator.async_send_control(changes)
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
@@ -143,7 +169,7 @@ class HaismartClimate(HaismartEntity, ClimateEntity):
         # concrete speed rather than send a write the AC will silently drop.
         if fan_mode == "auto" and self.hvac_mode == HVACMode.FAN_ONLY:
             fan_mode = _FAN_ONLY_DEFAULT_SPEED
-        fan_val = GRSETDAC_ENUMS["windSpeed"].get(fan_mode)
+        fan_val = self._fan_code(fan_mode)
         if fan_val is None:
             raise ValueError(f"unsupported fan_mode {fan_mode}")
         await self.coordinator.async_send_control({"windSpeed": fan_val})
