@@ -309,3 +309,59 @@ async def test_login_custom_login_host() -> None:
     )
     assert cap.request is not None
     assert cap.request.url.startswith("https://uhome-sea-yanshou.haieriot.net/")
+
+
+# --- HTTP transport plumbing (the event-loop-safety contract) ------------------
+
+
+async def test_httpx_transport_wraps_a_caller_supplied_client() -> None:
+    """A host with its own httpx client (Home Assistant) plugs it in here, so this library never
+    constructs one — building a client loads the CA bundle from disk, which blocks the event loop."""
+    from haismart_extractor.cloud import HTTP_TIMEOUT, httpx_transport
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        async def request(self, method, url, *, headers, content, timeout):
+            self.calls.append(
+                {"method": method, "url": url, "headers": headers,
+                 "content": content, "timeout": timeout}
+            )
+            return type("R", (), {"status_code": 207, "text": '{"ok":1}'})
+
+    client = FakeClient()
+    resp = await httpx_transport(client)(
+        Request("POST", "https://example.test/p", {"h": "v"}, '{"a":1}')
+    )
+    assert (resp.status, resp.json()) == (207, {"ok": 1})
+    assert client.calls == [{
+        "method": "POST", "url": "https://example.test/p", "headers": {"h": "v"},
+        "content": b'{"a":1}', "timeout": HTTP_TIMEOUT,
+    }]
+
+
+async def test_default_client_is_built_off_the_event_loop_and_reused() -> None:
+    """Regression: the default transport must not construct its httpx client on the event loop
+    (HA reports that as a blocking `load_verify_locations` call). It builds it in an executor
+    thread, once per loop."""
+    import threading
+    from unittest.mock import patch
+
+    import haismart_extractor.cloud as cloud_mod
+
+    built_on: list[str] = []
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            built_on.append(threading.current_thread().name)
+
+    cloud_mod._CLIENTS.clear()
+    with patch("httpx.AsyncClient", FakeAsyncClient):
+        first = await cloud_mod._async_default_client()
+        second = await cloud_mod._async_default_client()
+
+    assert first is second                      # one shared client per loop, not one per request
+    assert len(built_on) == 1
+    assert built_on[0] != threading.current_thread().name   # i.e. a worker thread, not the loop
+    cloud_mod._CLIENTS.clear()

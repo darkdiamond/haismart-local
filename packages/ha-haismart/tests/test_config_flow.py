@@ -283,7 +283,10 @@ async def _drive_login_to_pick(hass, mock_uss, extra_patches):
         CloudDevice("A1B2C3D4E5F7", "Upstairs", "0201203a", "UPLUS", False),
     ]
 
-    async def fake_login(username, password, zone_info):
+    async def fake_login(username, password, zone_info, *, transport=None):
+        # the flow must hand the library HA's shared-client transport, never let it build its own
+        # (constructing an httpx client loads the CA bundle from disk = blocking the event loop)
+        assert transport is not None
         return client, cloud_data
 
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
@@ -379,8 +382,9 @@ async def test_login_flow_email_password_hands_off(hass: HomeAssistant, mock_uss
     }
     devices = [CloudDevice("A1B2C3D4E5F6", "Downstairs", "0201203a", "UPLUS", True)]
 
-    async def fake_login(username, password, zone_info):
+    async def fake_login(username, password, zone_info, *, transport=None):
         assert username == "me@example.com" and password == "hunter2" and zone_info == "66"
+        assert transport is not None  # HA's shared httpx client, not one built on the loop
         return client, cloud_data
 
     with patch(

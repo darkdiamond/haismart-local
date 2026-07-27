@@ -20,6 +20,7 @@ from .cloud import (
     device_center_sign,
     device_center_sign_payload,
     encrypt_login_password,
+    httpx_transport,
 )
 from .gateway import (
     GatewayClient,
@@ -56,6 +57,7 @@ __all__ = [
     "get_localkey_via_gateway",
     "localkey_request_payload",
     "parse_localkey_response",
+    "httpx_transport",
     "device_center_sign",
     "device_center_sign_payload",
     "encrypt_login_password",
