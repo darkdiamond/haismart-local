@@ -34,8 +34,10 @@ from haismart_hrdp import (
     GRSETDAC_MODEL_AUTHORIZED,
     STATUS_LAYOUTS,
     AttributeProfile,
+    WireModel,
     async_read_status,
     async_send_op,
+    build_epp_frame,
     grsetdac_baseline_from_status,
     grsetdac_op_frame,
     model_enum_codes,
@@ -44,6 +46,7 @@ from haismart_hrdp import (
     profile_for,
     profile_from_device_config,
     read_grsetdac_field,
+    select_wire_model,
     set_grsetdac_field,
     validate_write,
 )
@@ -194,6 +197,9 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # write-capable (read-only family), or None. Blocks control with a clear message — unlike
         # unknown_layout it raises no repair, because monitoring works.
         self.read_only_layout: int | None = None
+        # the non-classic wire model in use (set on decode), or None for the classic family. Drives
+        # the family-specific control encoder.
+        self._wire_model: WireModel | None = None
         super().__init__(
             hass,
             _LOGGER,
@@ -225,9 +231,13 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._note_unknown_layout(blob)
                 else:
                     self._clear_unknown_layout()
-                # A known non-classic family decodes fully but may be display-only (no confirmed
-                # write path) — remember that so control returns a clear message instead of
-                # seeding a group-set from the wrong field map.
+                # A known non-classic family decodes fully. Track its wire model (drives the
+                # family-specific control encoder) and, if it has no confirmed write path, flag it
+                # read-only so control returns a clear message instead of a wrong-family group-set.
+                self._wire_model = (
+                    None if len(blob) in STATUS_LAYOUTS
+                    else select_wire_model(len(blob), self.uplus_id)
+                )
                 self.read_only_layout = (
                     len(blob) if state.get("writable") is False else None
                 )
@@ -385,6 +395,13 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if baseline is not None:  # refresh the cache from the fresh in-session baseline
                 self._misses = 0
                 self.last_raw_status = baseline
+            wm = self._wire_model
+            if wm is not None and wm.group_cmd is not None:
+                # Non-classic family: pack via its own wire model + group-set command. The encoder
+                # translates the classic-shaped change values (STD codes / setpoint) to this
+                # family's raw values and refuses anything unmapped.
+                words = wm.encode_control(wm.baseline_words(base), changes)
+                return build_epp_frame(0x01, wm.group_cmd, words)
             words = grsetdac_baseline_from_status(base)
             for name, value in changes.items():
                 words = set_grsetdac_field(

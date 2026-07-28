@@ -576,7 +576,7 @@ def test_compact12_decodes_the_three_real_reports():
         "power": False, "target_temperature": 27.0, "current_temperature": 29.0,
         "operation_mode": "6", "wind_speed": "1", "swing_vertical": False,
         "swing_horizontal": False, "mode": "fan_only", "fan_mode": "high",
-        "layout": "compact12", "writable": False,
+        "layout": "compact12", "writable": True,
     }
     cool = uss.parse_full_status(STATUS_117_COOL22, prof)
     assert cool["power"] is True and cool["target_temperature"] == 22.0
@@ -604,10 +604,35 @@ def test_compact12_maps_heat_via_the_profile():
     assert uss.parse_full_status(bytes(b), cooling_only)["mode"] is None
 
 
-def test_compact12_is_read_only_and_refuses_control():
-    """The 117 family reads fine but has no capture-confirmed write path, so seeding a group-set from
-    it must raise — its group-set eppCmd (4d5f) and field map differ from the classic 6001 path."""
-    assert uss.select_wire_model(117) is not None
+def test_compact12_control_encodes_a_4d5f_group_set():
+    """The 117 family's control path: read-modify-write over its 12-word array with group command
+    4d5f (spec from the APK, std->EPP maps applied), packing only the requested field and preserving
+    the rest. Round-trips: encode a change, wrap in the FF FF frame, and decode the words back."""
+    wm = uss.select_wire_model(117)
+    assert wm is not None and wm.group_cmd == b"\x4d\x5f"
+    base = wm.baseline_words(STATUS_117_COOL22)          # words 1..12 (24 bytes)
+    assert len(base) == 24
+
+    # set heat (STD 4 -> EPP 2 @ word6) and 25 C (EPP 9 @ word12) in one group-set
+    words = wm.encode_control(base, {"operationMode": 4, "targetTemperature": 25 - 16})
+    frame = uss.build_epp_frame(0x01, wm.group_cmd, words)
+    assert frame[:2] == b"\xff\xff" and frame[10:12] == b"\x4d\x5f"     # a 4d5f group-set frame
+    assert (frame[2] + sum(frame[3:-1])) & 0xFF == frame[-1]            # checksum reproduces
+    # word6 (mode) now EPP 2, word12 (temp) now EPP 9, everything else preserved from the baseline
+    assert words[(6 - 1) * 2 + 1] == 2
+    assert words[(12 - 1) * 2 + 1] == 9
+    assert words[(7 - 1) * 2 + 1] == base[(7 - 1) * 2 + 1]              # windSpeed untouched
+
+    # the encoder refuses an unmapped field and an unsupported enum value
+    with pytest.raises(KeyError):
+        wm.encode_control(base, {"healthMode": 1})
+    with pytest.raises(ValueError, match="not a supported code"):
+        wm.encode_control(base, {"operationMode": 9})
+
+
+def test_grsetdac_baseline_still_classic_only():
+    """The classic grSetDAC baseline helper stays classic-only — a non-classic length raises (that
+    path uses its own wire-model encoder, not this one)."""
     assert uss.select_wire_model(len(REAL_STATUS_DOWN)) is None   # classic length isn't in the registry
     with pytest.raises(ValueError, match="no capture-confirmed grSetDAC write layout"):
         uss.grsetdac_baseline_from_status(STATUS_117_OFF)
