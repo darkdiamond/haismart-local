@@ -1,8 +1,9 @@
 # Adding support for a new model
 
-If your air conditioner connects but some values look wrong — or Home Assistant reports
-`no decodable status` — its status report probably packs fields slightly differently. Working that
-out needs **no code and no protocol knowledge**, just three captures from you.
+Many models are recognised automatically from their factory layout, so most air conditioners just
+work. If yours connects but some values look wrong — or Home Assistant reports `no decodable status`
+— its status report packs fields in a layout we haven't mapped yet. Working that out needs **no code
+and no protocol knowledge**, just three captures from you.
 
 ## Why three captures
 

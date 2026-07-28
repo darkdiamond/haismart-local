@@ -35,6 +35,12 @@ CONF_GATEWAY_PASSWORD = "gateway_password"
 CONF_DIGITAL_MODEL = "digital_model"
 # Cloud product_code/pid (e.g. AAC1UKZ01) — selects the AttributeProfile for status decode.
 CONF_PRODUCT_CODE = "product_code"
+# The device's uPlusId (cloud device-list `wifiType`) — the app's own key for a device's wire model.
+# product_code is NOT a safe wire-model key (different AC families share one, e.g. AAC1UKZ01 covers
+# both the 127-byte classic and the 117-byte compact-12 layout), so the decoder prefers this when
+# known. Stored by the cloud onboarding paths; absent for manual onboarding (report length is the
+# fallback key there).
+CONF_UPLUS_ID = "uplus_id"
 # Human-readable identity from the cloud device list's `extendedInfo` (prodNo/model/brand). Shown on
 # the HA device page instead of the raw product code.
 CONF_MODEL_NAME = "model_name"

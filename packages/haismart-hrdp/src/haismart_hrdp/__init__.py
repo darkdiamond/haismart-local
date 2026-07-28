@@ -65,6 +65,7 @@ from .uss import (
     set_grsetdac_field,
     status_layout,
 )
+from .wire_models import WIRE_MODELS, WireField, WireModel, select_wire_model
 
 __version__ = "0.1.0"
 
@@ -86,6 +87,11 @@ __all__ = [
     "derive_status_layout",
     "StatusLayout",
     "STATUS_LAYOUTS",
+    # per-family wire models (non-classic report layouts)
+    "WireModel",
+    "WireField",
+    "WIRE_MODELS",
+    "select_wire_model",
     "StatusContainer",
     "parse_hello_resp",
     "check_hello_resp",

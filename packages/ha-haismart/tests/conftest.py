@@ -41,6 +41,35 @@ def make_status_frame(
     return bytes(frame)
 
 
+def make_compact12_frame(
+    *,
+    power: bool = True,
+    target_temp: int = 22,
+    indoor_temp: int = 27,
+    mode_epp: int = 1,   # EPP index (1 = cool on this family; see wire_models.COMPACT12)
+    fan_epp: int = 3,    # EPP index (3 = auto)
+    swing_v: bool = False,
+    swing_h: bool = False,
+) -> bytes:
+    """Build a synthetic 117-byte 'compact-12' full-status report (a different wire family — all
+    attributes live in the word array; positions per wire_models.COMPACT12). No valid EPP checksum
+    is needed: parse_full_status only needs the 2715 magic + length, then reads the word bits."""
+    frame = bytearray(117)
+    frame[2:4] = b"\x27\x15"
+
+    def setword(w: int, val: int) -> None:
+        off = 92 + (w - 1) * 2
+        frame[off], frame[off + 1] = (val >> 8) & 0xFF, val & 0xFF
+
+    setword(1, int(indoor_temp))                                   # indoorTemperature
+    setword(6, mode_epp)                                           # operationMode (EPP index)
+    setword(7, fan_epp)                                            # windSpeed (EPP index)
+    setword(8, (1 if swing_v else 0) | (2 if swing_h else 0))      # swing V=bit0, H=bit1
+    setword(9, 1 if power else 0)                                  # onOffStatus
+    setword(12, target_temp - 16)                                  # targetTemperature
+    return bytes(frame)
+
+
 def heat_capable_digital_model() -> dict:
     """A digital model like a heat-pump AC's: the reference unit's attributes plus operationMode 4
     (heat), which our own cooling-only hardware doesn't declare. The model is what authorizes heat,

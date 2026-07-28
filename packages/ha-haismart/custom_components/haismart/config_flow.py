@@ -73,6 +73,7 @@ from .const import (
     CONF_PRODUCT_CODE,
     CONF_REFRESH_TOKEN,
     CONF_SCAN_INTERVAL,
+    CONF_UPLUS_ID,
     CONF_ZONE_INFO,
     DEFAULT_PRODUCT_CODE,
     DEFAULT_SCAN_INTERVAL,
@@ -382,6 +383,11 @@ class HaismartConfigFlow(ConfigFlow, domain=DOMAIN):
                 (d for d in available if d.device_id == user_input[CONF_DEVICE_ID]), None
             )
             if picked is not None:
+                # Persist the uPlusId (device-list wifiType) — the precise wire-model key, so the
+                # decoder need not fall back to keying on report length. Absent on older list
+                # responses, which is fine (length keying still works).
+                if getattr(picked, "uplus_id", ""):
+                    self._cloud_data[CONF_UPLUS_ID] = picked.uplus_id
                 return await self._async_setup_cloud_device(picked.device_id, picked.name)
         choices = {d.device_id: f"{d.name or d.device_id} ({d.device_id})" for d in available}
         return self.async_show_form(

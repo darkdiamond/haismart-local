@@ -66,6 +66,7 @@ from .const import (
     CONF_PRODUCT_CODE,
     CONF_REFRESH_TOKEN,
     CONF_SCAN_INTERVAL,
+    CONF_UPLUS_ID,
     CONF_ZONE_INFO,
     DEFAULT_PRODUCT_CODE,
     DEFAULT_SCAN_INTERVAL,
@@ -176,6 +177,9 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.device_id: str = entry.data[CONF_DEVICE_ID]
         self._local_key: str = entry.data[CONF_LOCAL_KEY]
         self.product_code: str = entry.data.get(CONF_PRODUCT_CODE) or DEFAULT_PRODUCT_CODE
+        # uPlusId (device-list wifiType) — the precise wire-model key when the cloud onboarding
+        # stored it; None for manual onboarding, where the decoder keys on report length instead.
+        self.uplus_id: str | None = entry.data.get(CONF_UPLUS_ID) or None
         self.digital_model: dict[str, Any] | None = _load_digital_model(entry)
         self.profile: AttributeProfile = _build_profile(
             entry, self.product_code, self.digital_model
@@ -186,6 +190,10 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._misses = 0
         # length of a status report we could only partially decode, or None. Drives the repair.
         self.unknown_layout: int | None = None
+        # length of a report that decoded fully via a KNOWN non-classic wire model that is not yet
+        # write-capable (read-only family), or None. Blocks control with a clear message — unlike
+        # unknown_layout it raises no repair, because monitoring works.
+        self.read_only_layout: int | None = None
         super().__init__(
             hass,
             _LOGGER,
@@ -205,7 +213,9 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise UpdateFailed(f"uSS read from {self.host} failed: {err}") from err
 
         for blob in blobs:
-            if state := parse_full_status(blob, self.profile, self.digital_model):
+            if state := parse_full_status(
+                blob, self.profile, self.digital_model, uplus_id=self.uplus_id
+            ):
                 self._misses = 0
                 self.last_raw_status = blob
                 if state.get("partial"):
@@ -215,6 +225,12 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._note_unknown_layout(blob)
                 else:
                     self._clear_unknown_layout()
+                # A known non-classic family decodes fully but may be display-only (no confirmed
+                # write path) — remember that so control returns a clear message instead of
+                # seeding a group-set from the wrong field map.
+                self.read_only_layout = (
+                    len(blob) if state.get("writable") is False else None
+                )
                 return state
 
         # Connected fine but nothing decoded — either the AC pushed no full report this
@@ -329,6 +345,22 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # gated by the encoder allowlist alone.
         self._validate_against_model(changes)
 
+        if self.read_only_layout is not None:
+            # A recognised family, but its wire model (word map + group-set command) isn't
+            # capture-confirmed for writes yet. Reads work; control would use the wrong field map,
+            # so refuse cleanly rather than send a malformed op.
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="control_rejected",
+                translation_placeholders={
+                    "name": self.config_entry.title,
+                    "error": (
+                        "this AC model is supported for monitoring only; control is not enabled "
+                        "yet for its report layout"
+                    ),
+                },
+            )
+
         if self.unknown_layout is not None:
             # Reads degrade gracefully on an unrecognised report; writes must not. The size of the
             # control-word block is exactly what could not be determined, so a group-set built from
@@ -395,7 +427,9 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         decoded. The AC echoes updated state on the op connection (the protocol). Also updates
         the seed baseline + miss counter so the next op/poll starts from the confirmed state."""
         for blob in reversed(reply):
-            if state := parse_full_status(blob, self.profile, self.digital_model):
+            if state := parse_full_status(
+                blob, self.profile, self.digital_model, uplus_id=self.uplus_id
+            ):
                 self.last_raw_status = blob
                 self._misses = 0
                 return state

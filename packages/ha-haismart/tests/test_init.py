@@ -5,7 +5,11 @@ import json
 from datetime import timedelta
 
 import pytest
-from conftest import heat_capable_digital_model, make_status_frame
+from conftest import (
+    heat_capable_digital_model,
+    make_compact12_frame,
+    make_status_frame,
+)
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -86,6 +90,31 @@ async def test_powered_off_reports_hvac_off(hass: HomeAssistant, mock_uss) -> No
     mock_uss.read.return_value = [make_status_frame(power=False)]
     await _setup(hass)
     assert hass.states.get(CLIMATE).state == "off"
+
+
+async def test_compact12_family_decodes_and_is_monitoring_only(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """A non-classic wire family (117-byte compact-12, issue #4) decodes fully — climate + sensor
+    populate — WITHOUT raising the unknown-layout repair, and control is refused because that
+    family has no capture-confirmed write path (its group-set command + field map differ)."""
+    mock_uss.read.return_value = [
+        make_compact12_frame(power=True, target_temp=22, indoor_temp=27, mode_epp=1, fan_epp=3)
+    ]
+    entry = await _setup(hass)
+    assert entry.state is ConfigEntryState.LOADED
+
+    climate = hass.states.get(CLIMATE)
+    assert climate is not None and climate.state == "cool"
+    assert climate.attributes["current_temperature"] == 27.0
+    assert climate.attributes["temperature"] == 22.0
+
+    coord = entry.runtime_data
+    assert coord.unknown_layout is None            # a KNOWN family — no "new model" repair
+    assert coord.read_only_layout == 117           # but flagged monitoring-only
+
+    with pytest.raises(HomeAssistantError, match="monitoring only"):
+        await coord.async_send_control({"targetTemperature": 24 - 16})
 
 
 def _sent_field(send, name: str) -> int:

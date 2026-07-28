@@ -501,6 +501,33 @@ STATUS_125 = bytes.fromhex(
     "020000070000323760100003000000000000000000000000002fe4c19f"
 )
 
+# --- 117-byte "compact-12" family (haismart-local issue #4, HSU-12HFMF) --------
+# A DIFFERENT wire family: 12 words where the sensors live INSIDE the word array (indoor@w1,
+# outdoor@w2), not in a separate trailing block like the classic family. Three real decrypted status
+# reports supplied in the reporter's diagnostics, decoded via the APK preset wire model and each
+# matching the state they reported. No secret: the all-zero CAE report prefix, no deviceId in a report.
+#   OFF: power off, last setpoint 27, room 29, mode fan_only, fan high, swings off
+STATUS_117_OFF = bytes.fromhex(
+    "00002715000000004e5601000003020000040100000000000000000000000000"
+    "0000000000000000000000000000000000000000000000000000000000000000"
+    "00000000000000000000000000000025ffff22000000000000066d01001d003b"
+    "000000000000000300000000000000000000000bfc"
+)
+#   COOL 22, fan (decodes auto — see note), room 27
+STATUS_117_COOL22 = bytes.fromhex(
+    "00002715000000004e5601000003020000040100000000000000000000000000"
+    "0000000000000000000000000000000000000000000000000000000000000000"
+    "00000000000000000000000000000025ffff22000000000001066d01001b003c"
+    "000f00000000000100030000000100000000000608"
+)
+#   FAN ONLY, speed high, both swings on, room 27
+STATUS_117_FANHI_SWING = bytes.fromhex(
+    "00002715000000004e5601000003020000040100000000000000000000000000"
+    "0000000000000000000000000000000000000000000000000000000000000000"
+    "00000000000000000000000000000025ffff22000000000000066d01001b003c"
+    "0000000000000003000000030001000000000006fa"
+)
+
 
 def test_status_layout_recognises_both_report_lengths():
     assert len(STATUS_125) == 125
@@ -535,6 +562,68 @@ def test_parse_full_status_decodes_the_125_byte_variant():
         "health": False, "strong": False, "quiet": False, "sleep": False, "lamp": True, "eco": 0,
         "mode": "cool", "fan_mode": "auto",
     }
+
+
+def test_compact12_decodes_the_three_real_reports():
+    """The 117-byte family decodes via the wire-model registry (issue #4), matching the reporter's
+    stated state on all three captures. Sensors live in the word array, so mode/fan use the STD codes
+    the wire model maps from raw EPP indices (epp 2 -> STD "4" = heat, etc.)."""
+    from haismart_hrdp import profile_for
+
+    prof = profile_for("AAC1UKZ01")
+    off = uss.parse_full_status(STATUS_117_OFF, prof)
+    assert off == {
+        "power": False, "target_temperature": 27.0, "current_temperature": 29.0,
+        "operation_mode": "6", "wind_speed": "1", "swing_vertical": False,
+        "swing_horizontal": False, "mode": "fan_only", "fan_mode": "high",
+        "layout": "compact12", "writable": False,
+    }
+    cool = uss.parse_full_status(STATUS_117_COOL22, prof)
+    assert cool["power"] is True and cool["target_temperature"] == 22.0
+    assert cool["current_temperature"] == 27.0 and cool["mode"] == "cool"
+    fan = uss.parse_full_status(STATUS_117_FANHI_SWING, prof)
+    assert fan["mode"] == "fan_only" and fan["fan_mode"] == "high"
+    assert fan["swing_vertical"] is True and fan["swing_horizontal"] is True
+    # a compact-12 decode never fabricates the fields we deliberately left out
+    for absent in ("outdoor_temperature", "health", "strong", "quiet", "sleep", "lamp", "eco"):
+        assert absent not in off
+
+
+def test_compact12_maps_heat_via_the_profile():
+    """A model that HEATS names EPP mode index 2 as heat. The wire model emits STD code "4"; the
+    device's own profile turns that into the ``heat`` token — a cooling-only profile would just omit
+    it. Built by setting mode word 6 to raw 2 on a real report."""
+    from haismart_hrdp import profile_for
+
+    b = bytearray(STATUS_117_COOL22)
+    b[92 + (6 - 1) * 2 + 1] = 2   # operationMode word 6 low byte -> EPP index 2
+    heat_capable = profile_for("AACRL2E00")            # has mode "4" -> heat
+    cooling_only = profile_for("AAC1UKZ01")            # no heat in its map
+    assert uss.parse_full_status(bytes(b), heat_capable)["operation_mode"] == "4"
+    assert uss.parse_full_status(bytes(b), heat_capable)["mode"] == "heat"
+    assert uss.parse_full_status(bytes(b), cooling_only)["mode"] is None
+
+
+def test_compact12_is_read_only_and_refuses_control():
+    """The 117 family reads fine but has no capture-confirmed write path, so seeding a group-set from
+    it must raise — its group-set eppCmd (4d5f) and field map differ from the classic 6001 path."""
+    assert uss.select_wire_model(117) is not None
+    assert uss.select_wire_model(len(REAL_STATUS_DOWN)) is None   # classic length isn't in the registry
+    with pytest.raises(ValueError, match="no capture-confirmed grSetDAC write layout"):
+        uss.grsetdac_baseline_from_status(STATUS_117_OFF)
+
+
+def test_wire_model_selection_prefers_uplus_id_then_length():
+    from haismart_hrdp import select_wire_model
+
+    compact12 = select_wire_model(117)
+    assert compact12 is not None and compact12.family == "compact12"
+    assert select_wire_model(999) is None                        # unknown length, no match
+    # an implausible decode is rejected so a length collision can't surface a mis-decode
+    bogus = bytearray(STATUS_117_OFF)
+    bogus[92] = 0xFF   # indoor word 1 high byte -> ~16000 degC, fails the plausibility guard
+    bogus[93] = 0xFF
+    assert compact12.decode(bytes(bogus)) is None
 
 
 def test_parse_full_status_partially_decodes_an_unknown_report_length():
@@ -585,7 +674,7 @@ def test_grsetdac_baseline_tracks_the_report_layout():
 
 
 def test_grsetdac_baseline_rejects_an_unknown_length():
-    with pytest.raises(ValueError, match="not a full-status report"):
+    with pytest.raises(ValueError, match="no capture-confirmed grSetDAC write layout"):
         uss.grsetdac_baseline_from_status(STATUS_125[:-1])
 
 
