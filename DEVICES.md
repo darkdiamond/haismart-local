@@ -12,8 +12,14 @@ model missing from this table will very likely still work. The table records wha
 
 | Product code | Model | Report | Heat | Notes |
 |---|---|---|---|---|
-| `AACRL2E00` | PRO X INV-42/3PH | 125-byte, 5 control words | ✅ | `deviceType 0201201d`, OUI `24:E8:CE`. Reverse-cycle wall-mounted split; the reference unit for heat support. |
-| `AAC1UKZ01` | HSU-24VRRA03TF | 127-byte, 6 control words | ❌ | `deviceType 0201203a`, OUI `AC:B7:22`. Cooling-only. The original unit this project was written for. |
+| `AACRL2E00` | PRO X INV-42/3PH | 125-byte classic | ✅ | `deviceType 0201201d`, OUI `24:E8:CE`. Reverse-cycle wall-mounted split; the reference unit for heat support. |
+| `AAC1UKZ01` | HSU-24VRRA03TF | 127-byte classic | ❌ | `deviceType 0201203a`, OUI `AC:B7:22`. Cooling-only. The original unit this project was written for. |
+| `AAC1UKZ01` | HSU-12HFMF/013WUSDC(W) | 117-byte compact-12 | ✅ | OUI `04:E2:29`. A **different wire family** — all attributes (sensors included) are packed into one word array. Reading and control both confirmed on real hardware. |
+
+> **"Report" is the status layout, not just a length.** Most models share the *classic* family (the
+> setpoint/mode/fan/power in a leading control-word block, sensors after it); the length only varies
+> with how many control words the model carries. A few models use a genuinely different packing (e.g.
+> **compact-12**), which the integration recognises and decodes automatically.
 
 ## Known NOT to work
 

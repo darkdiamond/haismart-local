@@ -5,7 +5,11 @@ import json
 from datetime import timedelta
 
 import pytest
-from conftest import heat_capable_digital_model, make_status_frame
+from conftest import (
+    heat_capable_digital_model,
+    make_compact12_frame,
+    make_status_frame,
+)
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -86,6 +90,36 @@ async def test_powered_off_reports_hvac_off(hass: HomeAssistant, mock_uss) -> No
     mock_uss.read.return_value = [make_status_frame(power=False)]
     await _setup(hass)
     assert hass.states.get(CLIMATE).state == "off"
+
+
+async def test_compact12_family_decodes_and_controls_via_4d5f(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """A non-classic wire family (117-byte compact-12, issue #4) decodes fully — climate + sensor
+    populate — WITHOUT the unknown-layout repair, and control goes out as the family's own 4d5f
+    group-set (setpoint packed at word 12, per the APK group-command spec)."""
+    frame = make_compact12_frame(power=True, target_temp=22, indoor_temp=27, mode_epp=1, fan_epp=3)
+    mock_uss.read.return_value = [frame]
+    mock_uss.send.baseline = frame   # the AC's in-session push that seeds the group-set
+    entry = await _setup(hass)
+    assert entry.state is ConfigEntryState.LOADED
+
+    climate = hass.states.get(CLIMATE)
+    assert climate is not None and climate.state == "cool"
+    assert climate.attributes["current_temperature"] == 27.0
+    assert climate.attributes["temperature"] == 22.0
+
+    coord = entry.runtime_data
+    assert coord.unknown_layout is None            # a KNOWN family — no "new model" repair
+    assert coord.read_only_layout is None          # writable family — control enabled
+
+    await coord.async_send_control({"targetTemperature": 24 - 16})
+    sent = mock_uss.send.last_frame
+    # a 4d5f group-set frame, not the classic 6001
+    assert sent[:2] == b"\xff\xff" and sent[10:12] == b"\x4d\x5f"
+    words = sent[12:-1]
+    assert len(words) == 24
+    assert words[(12 - 1) * 2 + 1] == 24 - 16  # setpoint packed at word 12
 
 
 def _sent_field(send, name: str) -> int:

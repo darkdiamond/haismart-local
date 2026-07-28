@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from haismart_hrdp import STATUS_LAYOUTS, derive_status_layout
+from haismart_hrdp import STATUS_LAYOUTS, derive_status_layout, select_wire_model
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
 
@@ -61,7 +61,9 @@ async def async_get_config_entry_diagnostics(
         "report": {
             "length": len(coordinator.last_raw_status or b"") or None,
             "unknown_layout": coordinator.unknown_layout,
+            "read_only_layout": coordinator.read_only_layout,
             "known_lengths": sorted(STATUS_LAYOUTS),
+            "uplus_id": coordinator.uplus_id,
             "layout": _layout_summary(coordinator),
         },
         "digital_model": _model_summary(coordinator.digital_model),
@@ -81,6 +83,11 @@ def _layout_summary(coordinator) -> dict[str, Any] | None:
     blob = coordinator.last_raw_status
     if not blob:
         return None
+    # A non-classic family decoded by the wire-model registry (e.g. compact-12) — report which one.
+    if len(blob) not in STATUS_LAYOUTS:
+        wm = select_wire_model(len(blob), coordinator.uplus_id)
+        if wm is not None:
+            return {"resolved": True, "family": wm.family, "writable": wm.writable}
     layout = derive_status_layout(blob, coordinator.digital_model)
     if layout is None:
         return {"resolved": False}

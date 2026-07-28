@@ -32,6 +32,8 @@ from dataclasses import dataclass
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+from .wire_models import select_wire_model
+
 _LOGGER = logging.getLogger(__name__)
 
 USS_PORT = 56800
@@ -638,7 +640,9 @@ _STATUS_TOGGLE_FIELDS = {
 }
 
 
-def parse_full_status(data: bytes, profile=None, digital_model: dict | None = None) -> dict:
+def parse_full_status(
+    data: bytes, profile=None, digital_model: dict | None = None, *, uplus_id: str | None = None
+) -> dict:
     """Decode the CONFIRMED fields of a full-status report (see :data:`STATUS_LAYOUTS`).
 
     All offsets validated on real hardware (getAttributeMap ground truth + a one-attribute-at-a-time
@@ -655,17 +659,33 @@ def parse_full_status(data: bytes, profile=None, digital_model: dict | None = No
     NB the many air-quality/humidity attributes the digital model lists read 0 on this basic cooling
     unit — it has no such sensors — so they carry no data to decode from the report.
 
-    The offsets above are the AAC1UKZ01 (127-byte) report. Models that report fewer grSetDAC control
-    words shift the sensor offsets that follow the word block — ``indoorTemperature`` /
-    ``outdoorTemperature`` are therefore read from the blob's :class:`StatusLayout`, not from fixed
-    constants. The attribute vector itself always starts at byte 92, so the control-word fields
-    (power / target temperature / mode / fan / swing) are layout-independent.
+    The offsets above are the AAC1UKZ01 (127-byte) report — the "classic" split-AC family. Models
+    that report fewer grSetDAC control words shift the sensor offsets that follow the word block —
+    ``indoorTemperature`` / ``outdoorTemperature`` are therefore read from the blob's
+    :class:`StatusLayout`, not from fixed constants. The attribute vector itself always starts at
+    byte 92, so the classic control-word fields (power / target temperature / mode / fan / swing) are
+    layout-independent *within that family*.
+
+    A report whose length is NOT a classic layout is handed to the per-family **wire-model** registry
+    (:mod:`haismart_hrdp.wire_models`) first — an entirely different family (e.g. the 117-byte
+    "compact-12", where the sensors live inside the word array) decodes there. Such a decode carries a
+    ``layout`` marker (the family name) and ``writable`` flag; the classic family sets neither. Only if
+    no wire model claims the report does it fall through to the partial / unknown-layout handling.
 
     Pass an ``AttributeProfile`` (e.g. ``profile_for("AAC1UKZ01")``) to also get normalized ``mode``/
-    ``fan_mode`` tokens. Returns ``{}`` if ``data`` isn't a recognised full-status report.
+    ``fan_mode`` tokens. ``uplus_id`` (the device-list ``wifiType``) selects a wire model exactly when
+    known, otherwise report length is used. Returns ``{}`` if ``data`` isn't a full-status report.
     """
     if len(data) < 4 or data[2:4] != b"\x27\x15":
         return {}
+    # Non-classic families: the classic 125/127 lengths keep their hardware-verified inline decode
+    # (and the write path) below; every other length consults the wire-model registry. A wire-model
+    # decode that fails its own plausibility check returns None here, so we fall through to the
+    # unknown-layout path rather than surfacing a mis-decode.
+    if len(data) not in STATUS_LAYOUTS:
+        wm = select_wire_model(len(data), uplus_id)
+        if wm is not None and (decoded := wm.decode(data, profile)) is not None:
+            return decoded
     layout = derive_status_layout(data, digital_model)
     if layout is None and len(data) <= _OFF_ONOFF:
         return {}   # too short even for the layout-independent fields
@@ -832,10 +852,18 @@ def grsetdac_baseline_from_status(status_blob: bytes) -> bytes:
     ``N`` comes from the report's :class:`StatusLayout`. Slicing a fixed 12 bytes would pull read-only
     sensor bytes into the word block on a model that carries fewer control words, and a group-set seeded
     that way would write a sensor reading back as if it were a control word.
+
+    Only the classic family (:data:`STATUS_LAYOUTS`) has a capture-confirmed grSetDAC write path, so
+    this raises for any other report — including a non-classic family that :func:`parse_full_status`
+    reads fine via the wire-model registry. Writing to such a family would use the wrong field map, so
+    control stays refused until that family is captured on real hardware.
     """
     layout = status_layout(status_blob)
     if layout is None:
-        raise ValueError("not a full-status report — cannot derive a grSetDAC baseline")
+        raise ValueError(
+            f"report length {len(status_blob)} has no capture-confirmed grSetDAC write layout "
+            f"(known: {sorted(STATUS_LAYOUTS)}) — control is unavailable for this model"
+        )
     return status_blob[layout.baseline]
 
 

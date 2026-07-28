@@ -68,6 +68,32 @@ would send a sensor byte back to the AC as a control word.
 Fields at bytes 92–97 are control words 1–3 and therefore sit before anything the word count shifts,
 which is why an unrecognised report can still be partially decoded.
 
+### Other wire families (per-model layouts)
+
+The table above is the *classic* family. Some models pack their attributes into an entirely
+different layout — not just a different word count, but different words for each attribute, and the
+sensors interleaved into the same array rather than in a trailing block. Each such family is a
+**wire model**: a per-attribute map of `word` / `bit` / `length` plus the value transforms, kept in
+[`wire_models.py`](packages/haismart-hrdp/src/haismart_hrdp/wire_models.py) and selected by uPlusId
+(the cloud device-list `wifiType`) or, failing that, by report length — with a plausibility check so
+an ambiguous length falls back to the unknown-layout path instead of mis-decoding.
+
+The first such family is **compact-12** (117-byte report, e.g. HSU-12HFMF): a 12-word array with
+`indoorTemperature` at word 1, `operationMode` at word 6, `windSpeed` at word 7, swings at word 8,
+`onOffStatus` at word 9 and `targetTemperature` at word 12. Its enum values are true EPP indices
+(unlike the classic family, whose stored codes equal the Haier STD codes), so the wire model maps
+each back to its STD code for the profile to name. Control uses the model's own group-set command
+(`4d5f`, vs the classic `6001`), a read-modify-write over the same 12-word array.
+
+> **Future consolidation.** The classic family is currently a bespoke decoder/encoder while the newer
+> families are data-driven wire models — two paradigms for the same idea. The plan, once the wire-model
+> path has more confirmed models behind it, is to fold the classic family into the registry as one more
+> entry (extending `WireModel` to cover its byte-offset sensors, variable 125/127 length, and
+> device-specific values such as the swing toggle and repurposed eco field), collapsing to a single
+> path. A smaller first step is to extract the shared bit pack/unpack helpers the two paths currently
+> duplicate. Both are deliberately deferred so the hardware-verified classic path stays untouched until
+> then.
+
 ### Confirmed field offsets
 
 | Field | Where | Decode |
