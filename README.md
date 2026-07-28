@@ -211,9 +211,10 @@ The AC answered and the connection is fine, but Home Assistant couldn't read the
 
 - **Stale local key** — keys rotate server-side. If you signed in with your account, it re-fetches
   automatically; otherwise you'll be prompted to re-authenticate.
-- **A report layout we don't know yet** — your model packs its status slightly differently. Recent
-  versions decode what they can and say so explicitly instead of failing outright. Please
-  [open an issue](#before-you-open-an-issue) with diagnostics; it's usually a one-line fix.
+- **A report layout we don't know yet** — your model packs its status differently. The integration
+  recognises several layouts automatically and, for anything else, decodes what it can and says so
+  explicitly instead of failing outright. Please [open an issue](#before-you-open-an-issue) with
+  diagnostics; adding a new layout is usually a small change.
 
 </details>
 
