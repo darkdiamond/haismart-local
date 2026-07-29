@@ -267,6 +267,25 @@ The AC answered and the connection is fine, but Home Assistant couldn't read the
 </details>
 
 <details>
+<summary><b>Temperatures show the wrong unit (°F instead of °C, or vice versa)</b></summary>
+
+This happens when Home Assistant's unit system was **changed after** the integration was first set
+up. Home Assistant pins each sensor's display unit to whatever the system used **when the sensor was
+first created**, on purpose, so that later changing the system unit doesn't silently rewrite your
+history. So sensors added before the change keep the old unit while newer ones use the new one — it
+applies to any integration's temperature sensors, not just this one.
+
+Two ways to fix it, per sensor:
+
+- **Keep history (recommended):** open the sensor → its settings (cog) → **Unit of Measurement** →
+  pick the unit you want. Home Assistant converts the stored history to match.
+- **Clean slate:** delete the sensor entity; the integration recreates it on the next update, and the
+  new one follows your current system unit. This clears the pinned unit but starts its history over
+  (and the entity id may change if you've since renamed the device).
+
+</details>
+
+<details>
 <summary><b>Entities are unavailable, or the AC dropped off</b></summary>
 
 Check its IP hasn't changed (set a DHCP reservation), that nothing else is holding a local session
