@@ -490,9 +490,17 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return self._local_key
 
     def current_field(self, name: str) -> int | None:
-        """The live raw EPP value of a grSetDAC field (for the toggle/select entities), or None."""
+        """The live raw EPP value of a grSetDAC field (for the toggle/select entities), or None.
+
+        A non-classic family keeps its control block wherever its own wire model says, so the value
+        is read back through that model — otherwise the classic reader would slice the wrong bytes,
+        and a switch would show a state the AC never reported. ``None`` (state unknown) whenever the
+        field isn't mapped on this family, which is how a monitoring-only model behaves.
+        """
         if self.last_raw_status is None:
             return None
+        if (wm := self._wire_model) is not None:
+            return wm.current_write_value(self.last_raw_status, name)
         try:
             return read_grsetdac_field(self.last_raw_status, name)
         except (ValueError, KeyError):

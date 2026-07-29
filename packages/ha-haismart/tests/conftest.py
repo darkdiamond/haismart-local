@@ -70,6 +70,36 @@ def make_compact12_frame(
     return bytes(frame)
 
 
+def make_extended36_frame(
+    *,
+    power: bool = True,
+    target_temp: int = 22,
+    indoor_temp: float = 27.5,
+    mode_code: int = 1,   # STD code == EPP value on this family (1 = cool)
+    fan_code: int = 1,    # STD code == EPP value (1 = high)
+    swing_v: bool = False,
+    swing_h: bool = True,
+    lamp: bool = True,
+) -> bytes:
+    """Build a synthetic 165-byte 'extended-36' full-status report (issue #5). Same bit map as the
+    classic family, but displaced 19 words: the report keeps a voice/media block at words 1..19 and
+    the climate block from word 20 (positions per wire_models.EXTENDED36)."""
+    frame = bytearray(165)
+    frame[2:4] = b"\x27\x15"
+
+    def setword(w: int, val: int) -> None:
+        off = 92 + (w - 1) * 2
+        frame[off], frame[off + 1] = (val >> 8) & 0xFF, val & 0xFF
+
+    setword(1, 0x2064)                                             # the media block (volume etc.)
+    setword(20, ((target_temp - 16) << 8) | (0x08 if swing_v else 0))
+    setword(21, (mode_code << 13) | (fan_code << 8))
+    setword(22, (1 if power else 0) | (0x200 if lamp else 0))
+    setword(23, 0x07 if swing_h else 0x00)                         # windDirectionHorizontal
+    setword(25, int(indoor_temp * 2) << 8)                         # indoorTemperature (k=0.5)
+    return bytes(frame)
+
+
 def heat_capable_digital_model() -> dict:
     """A digital model like a heat-pump AC's: the reference unit's attributes plus operationMode 4
     (heat), which our own cooling-only hardware doesn't declare. The model is what authorizes heat,

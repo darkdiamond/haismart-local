@@ -40,6 +40,8 @@ from dataclasses import dataclass, field
 _ATTR_BASE = 92          # first attribute byte; word N (1-based) starts at _ATTR_BASE + 2*(N-1)
 _PLAUSIBLE_INDOOR_C = (0.0, 60.0)   # a decoded indoorTemperature outside this ⇒ wrong family
 _PLAUSIBLE_TARGET_C = (10.0, 40.0)  # setpoints live in ~16..30; a wide band still catches a mis-decode
+_PLAUSIBLE_SENSOR_C = (-30.0, 70.0)  # band for a ``"temp"`` field (see :class:`WireField`)
+_SENSOR_ABSENT = (0x00, 0xFF)        # raw values a unit reports for a probe it does not have
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,12 @@ class WireField:
 
     * ``"bool"``  -> ``bool(raw)``
     * ``"int"``   -> ``raw * k + c`` (a temperature/number)
+    * ``"temp"``  -> ``raw * k + c``, but ``None`` for a raw value that means "no such probe"
+      (``0x00``/``0xFF``) or that lands outside :data:`_PLAUSIBLE_SENSOR_C`. Use this for a *sensor*
+      reading rather than ``"int"``: a unit without an outdoor probe reports 0, which the raw formula
+      would turn into a confident −64 °C, and one fabricated MEASUREMENT permanently skews the
+      min/max/mean of a user's long-term statistics. This mirrors ``uss._sensor_temp`` on the classic
+      family.
     * ``"enum"``  -> ``enum[raw]`` — maps the raw EPP value to a **Haier STD code string** (so the
       per-model :class:`~haismart_hrdp.models.AttributeProfile` can name it), or drops the field when
       the raw value isn't in the map.
@@ -73,6 +81,12 @@ class WireField:
             return bool(raw)
         if self.kind == "enum":
             return None if self.enum is None else self.enum.get(raw)
+        if self.kind == "temp":
+            if raw in _SENSOR_ABSENT:
+                return None
+            value = raw * self.k + self.c
+            lo, hi = _PLAUSIBLE_SENSOR_C
+            return value if lo <= value <= hi else None
         return raw * self.k + self.c
 
 
@@ -89,6 +103,10 @@ class WriteField:
     * ``"std_enum"``   — a STD code; map via ``std_to_epp`` (refuse anything not in it).
     * ``"onoff"``      — any nonzero classic "on" value packs ``on_value``; ``0`` packs ``0`` (swing,
       whose classic raw value — 0x0c / 7 — is not this family's code).
+
+    ``min_epp``/``max_epp`` bound a ``"passthrough"`` field whose valid range is narrower than its bit
+    width — the setpoint being the case that matters, where 8 bits would otherwise accept a wire value
+    meaning 115 °C. The enum kinds are already bounded by their own maps.
     """
 
     word: int
@@ -97,6 +115,8 @@ class WriteField:
     kind: str = "passthrough"
     std_to_epp: Mapping[int, int] | None = None
     on_value: int = 1
+    min_epp: int | None = None
+    max_epp: int | None = None
 
 
 @dataclass(frozen=True)
@@ -109,9 +129,15 @@ class WireModel:
     path does, so the coordinator/entities see the same shape.
 
     ``writable`` families additionally define ``group_cmd`` (the group-set EPP command), ``word_count``
-    (the settable word array spans words 1..word_count from byte 92) and ``write_fields`` (the packing
-    map). Control is a read-modify-write group-set: seed the word array from a live report, flip the
-    requested fields, wrap in an ``FF FF`` frame with ``group_cmd``.
+    (how many words the settable array holds), ``write_base_word`` (the *report* word at which that
+    array starts) and ``write_fields`` (the packing map). Control is a read-modify-write group-set:
+    seed the word array from a live report, flip the requested fields, wrap in an ``FF FF`` frame with
+    ``group_cmd``.
+
+    ``write_fields`` positions are **group-set-relative** (word 1 = the first word of the op's data),
+    while ``fields`` positions are **report-relative** (word 1 = byte 92). On most families these
+    coincide, but a family can carry an unrelated block ahead of its climate attributes in the report
+    while the op still starts at its own word 1 — ``write_base_word`` is exactly that displacement.
     """
 
     family: str
@@ -122,7 +148,8 @@ class WireModel:
     indoor_key: str = "current_temperature"
     target_key: str = "target_temperature"
     group_cmd: bytes | None = None  # group-set EPP command (e.g. b"\x4d\x5f")
-    word_count: int = 0             # settable words 1..word_count (from byte 92)
+    word_count: int = 0             # settable words 1..word_count
+    write_base_word: int = 1        # report word holding group-set word 1 (1 = the report's own word 1)
     write_fields: Mapping[str, WriteField] = field(default_factory=dict)
 
     def matches(self, length: int, uplus_id: str | None) -> bool:
@@ -133,10 +160,34 @@ class WireModel:
     def baseline_words(self, report: bytes) -> bytearray:
         """The settable word array (words 1..word_count) sliced from a full-status report — the seed
         for a group-set so untouched attributes are preserved."""
-        end = _ATTR_BASE + 2 * self.word_count
+        start = _ATTR_BASE + 2 * (self.write_base_word - 1)
+        end = start + 2 * self.word_count
         if len(report) < end:
             raise ValueError(f"report too short ({len(report)}) for {self.family} baseline")
-        return bytearray(report[_ATTR_BASE:end])
+        return bytearray(report[start:end])
+
+    def current_write_value(self, report: bytes, name: str) -> int | None:
+        """The live value of a *writable* field, read back out of ``report`` in the same
+        representation :meth:`encode_control` accepts — so a caller can show the current state of an
+        attribute the read map doesn't publish (the secondary toggles). ``None`` when the field isn't
+        writable on this family or the report is too short to carry it."""
+        wf = self.write_fields.get(name)
+        if wf is None:
+            return None
+        try:
+            words = self.baseline_words(report)
+        except ValueError:
+            return None
+        off = (wf.word - 1) * 2
+        if off + 1 >= len(words):
+            return None
+        raw = ((words[off] << 8) | words[off + 1]) >> wf.bit & ((1 << wf.length) - 1)
+        if wf.kind == "std_enum":
+            inverse = {epp: std for std, epp in (wf.std_to_epp or {}).items()}
+            return inverse.get(raw)
+        if wf.kind == "onoff":
+            return wf.on_value if raw else 0
+        return raw
 
     def encode_control(self, baseline: bytes, changes: Mapping[str, int]) -> bytes:
         """Pack ``changes`` ({classic field name: classic value}) into a copy of ``baseline`` (the
@@ -173,6 +224,11 @@ class WireModel:
             epp = value
         if not 0 <= epp < (1 << wf.length):
             raise ValueError(f"{name}={epp} does not fit its {wf.length}-bit field on {self.family}")
+        lo, hi = wf.min_epp, wf.max_epp
+        if (lo is not None and epp < lo) or (hi is not None and epp > hi):
+            raise ValueError(
+                f"{name}={epp} is outside the {lo}..{hi} this field accepts on {self.family}"
+            )
         return epp
 
     def decode(self, data: bytes, profile=None) -> dict | None:
@@ -226,7 +282,9 @@ _COMPACT12_WRITE = {
     "windSpeed": WriteField(7, 0, 16, "std_enum", std_to_epp={1: 0, 2: 1, 3: 2, 5: 3}),
     "windDirectionVertical": WriteField(8, 0, 1, "onoff", on_value=1),
     "windDirectionHorizontal": WriteField(8, 1, 1, "onoff", on_value=1),
-    "targetTemperature": WriteField(12, 0, 16, "passthrough"),
+    # 16..30 C (the preset's own minValue/maxValue), i.e. EPP 0..14 — same range as the classic
+    # family, and far narrower than the 16 bits the field occupies.
+    "targetTemperature": WriteField(12, 0, 16, "passthrough", min_epp=0, max_epp=14),
     "onOffStatus": WriteField(9, 0, 1, "passthrough"),
 }
 
@@ -260,9 +318,80 @@ COMPACT12 = WireModel(
     },
 )
 
+# --- extended-36 (165-byte report) --------------------------------------------------------------
+
+# operationMode / windSpeed are plain STD enums here: the preset maps stdValue -> eppValue 1:1 for
+# both, so the raw wire value IS the STD code the digital model and the profile already speak.
+_EXT36_MODE = {0: "0", 1: "1", 2: "2", 4: "4", 6: "6"}   # auto / cool / dry / heat / fan_only
+_EXT36_FAN = {1: "1", 2: "2", 3: "3", 5: "5"}            # high / medium / low / auto
+
+# Control: the preset's own `grSetDAC` Operation gives the group command (`6001`) and a five-word
+# array whose bit map is **byte-for-byte the classic family's** — targetTemperature w1.b8,
+# windDirectionVertical w1.b0, operationMode w2.b13, windSpeed w2.b8, then the w3 boolean block
+# (onOff b0, health b1, rapid b3, mute b4, sleep b5, screenDisplay b9) and windDirectionHorizontal
+# w4.b0. That map is hardware-verified on the classic units, and `6001` is the same command the
+# captured classic write path sends; what differs on this family is only *where the report keeps
+# that block* (see `write_base_word` below), not how the op is packed.
+#
+# Enum values are restricted to the app's own mode table {auto, cool, dry, heat, fan_only} and the
+# four fan speeds rather than the full 0..6 the preset declares — codes 3 and 5 have no known
+# meaning, and the encoder's job is to refuse what we cannot name.
+_EXT36_WRITE = {
+    "targetTemperature": WriteField(1, 8, 8, "passthrough", min_epp=0, max_epp=14),  # 16..30 C
+    "windDirectionVertical": WriteField(1, 0, 4, "onoff", on_value=0x0C),
+    "operationMode": WriteField(2, 13, 3, "std_enum", std_to_epp={0: 0, 1: 1, 2: 2, 4: 4, 6: 6}),
+    "windSpeed": WriteField(2, 8, 3, "std_enum", std_to_epp={1: 1, 2: 2, 3: 3, 5: 5}),
+    "onOffStatus": WriteField(3, 0, 1, "passthrough"),
+    "healthMode": WriteField(3, 1, 1, "passthrough"),
+    "rapidMode": WriteField(3, 3, 1, "passthrough"),
+    "muteStatus": WriteField(3, 4, 1, "passthrough"),
+    "silentSleepStatus": WriteField(3, 5, 1, "passthrough"),
+    "screenDisplayStatus": WriteField(3, 9, 1, "passthrough"),
+    "windDirectionHorizontal": WriteField(4, 0, 3, "onoff", on_value=0x07),
+}
+
+# The "extended-36" family: a 36-word report (165 B) carrying the **classic** climate block displaced
+# by 19 words. Those leading 19 words are a voice/media module (volume, playback, dialect, …) that the
+# generic preset describes but a plain split AC leaves inert — which is exactly why the classic
+# partial decode misfires on this model: byte 92 is the module's `volume`, not the setpoint, so the
+# setpoint reads as 48 C and power reads as off (haismart-local issue #5).
+#
+# Transcribed from APK presets `2008…691590000…40` (deviceType `02012036`, 挂机通用_V2D18S_0D05, wall
+# mounted) and `2008…112410000…40` (`0301200n`, 柜机通用_V2D18S_0D05, the floor-standing sibling) —
+# the only two presets implying a 165-byte report, and their field maps are identical, so keying this
+# family on report length is unambiguous. Validated against the two distinct reports captured on a
+# real HSU-12KCROC(IN)-R32 (issue #5): power off/on matched the stated states, the setpoint decoded to
+# the 22 C the reporter had set, indoor read 30.0/27.5 C, and vertical swing matched fixed/swinging.
+#
+# Deliberately omitted from the READ: indoorHumidity and the air-quality attributes (this class of
+# unit has no such probes and every capture read 0), and `specialMode`. `outdoorTemperature` IS read,
+# but as a ``"temp"`` field — both captures report the 0 sentinel, which surfaces as "no reading"
+# rather than a fabricated −64 C.
+EXTENDED36 = WireModel(
+    family="extended36",
+    report_lengths=frozenset({165}),
+    writable=True,
+    group_cmd=b"\x60\x01",
+    word_count=5,
+    write_base_word=20,     # report word 20 == group-set word 1 (the 19-word media block precedes it)
+    write_fields=_EXT36_WRITE,
+    fields={
+        "power": WireField(22, 0, 1, kind="bool"),
+        "target_temperature": WireField(20, 8, 8, kind="int", k=1.0, c=16.0),
+        "current_temperature": WireField(25, 8, 8, kind="temp", k=0.5, c=0.0),
+        "outdoor_temperature": WireField(26, 8, 8, kind="temp", k=1.0, c=-64.0),
+        "operation_mode": WireField(21, 13, 3, kind="enum", enum=_EXT36_MODE),
+        "wind_speed": WireField(21, 8, 3, kind="enum", enum=_EXT36_FAN),
+        # bit 3 of the vane nibble is the "swinging" flag on the classic map (byte 93 & 0x08); the
+        # remaining bits are a fixed vane position, which is not swing.
+        "swing_vertical": WireField(20, 3, 1, kind="bool"),
+        "swing_horizontal": WireField(23, 0, 3, kind="bool"),
+    },
+)
+
 # Every non-classic family known to the library. The classic 125/127 family is NOT here — it keeps
 # its verified inline decode + write path in uss.py.
-WIRE_MODELS: tuple[WireModel, ...] = (COMPACT12,)
+WIRE_MODELS: tuple[WireModel, ...] = (COMPACT12, EXTENDED36)
 
 
 def select_wire_model(length: int, uplus_id: str | None = None) -> WireModel | None:
