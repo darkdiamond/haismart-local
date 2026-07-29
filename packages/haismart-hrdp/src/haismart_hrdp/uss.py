@@ -791,7 +791,7 @@ _EXT_OFF_POWER = 126          # BE16, watts
 _EXT_OFF_COIL_DISCHARGE = 128  # high byte = indoor coil temp, low byte = compressor discharge temp
 _EXT_OFF_FREQ = 133           # compressor frequency, Hz
 _EXT_OFF_CURRENT = 134        # BE16, amps x 10
-_EXT_OFF_ACTUATORS = 136      # BE16 of 2-bit actuator states; bits 0-1 = compressor
+_EXT_OFF_ACTUATORS = 136      # BE16 of 2-bit actuator states: bits 0-1 compressor, bits 2-3 indoor fan
 # A unit that is not reporting simply sends 0. Anything above these is not a real domestic reading and
 # is treated as "no data" rather than published into long-term statistics.
 _MAX_PLAUSIBLE_W = 20_000
@@ -808,7 +808,7 @@ def parse_extended_status(data: bytes) -> dict[str, Any]:
 
     Keys (each omitted when the unit does not report it):
       ``power_w``, ``compressor_current_a``, ``compressor_frequency_hz``,
-      ``coil_temperature``, ``discharge_temperature``, ``compressor_running``
+      ``coil_temperature``, ``discharge_temperature``, ``compressor_running``, ``fan_running``
     """
     if len(data) != _EXT_STATUS_LEN or data[2:4] != b"\x27\x15":
         return {}
@@ -834,6 +834,7 @@ def parse_extended_status(data: bytes) -> dict[str, Any]:
         out["discharge_temperature"] = discharge
     actuators = int.from_bytes(data[_EXT_OFF_ACTUATORS:_EXT_OFF_ACTUATORS + 2], "big")
     out["compressor_running"] = bool(actuators & 0x03)
+    out["fan_running"] = bool((actuators >> 2) & 0x03)
     return out
 
 

@@ -165,6 +165,12 @@
       },
       "local_key": {
         "name": "المفتاح المحلي"
+      },
+      "coil_temperature": {
+        "name": "Coil temperature"
+      },
+      "discharge_temperature": {
+        "name": "Discharge temperature"
       }
     },
     "switch": {
@@ -193,6 +199,14 @@
           "level2": "اقتصادي 6",
           "level3": "اقتصادي 7"
         }
+      }
+    },
+    "binary_sensor": {
+      "compressor": {
+        "name": "Compressor"
+      },
+      "fan": {
+        "name": "Fan"
       }
     }
   },

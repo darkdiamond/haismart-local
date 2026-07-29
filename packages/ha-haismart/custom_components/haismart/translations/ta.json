@@ -165,6 +165,12 @@
       },
       "local_key": {
         "name": "லோக்கல் கீ"
+      },
+      "coil_temperature": {
+        "name": "Coil temperature"
+      },
+      "discharge_temperature": {
+        "name": "Discharge temperature"
       }
     },
     "switch": {
@@ -193,6 +199,14 @@
           "level2": "இக்கோ 6",
           "level3": "இக்கோ 7"
         }
+      }
+    },
+    "binary_sensor": {
+      "compressor": {
+        "name": "Compressor"
+      },
+      "fan": {
+        "name": "Fan"
       }
     }
   },

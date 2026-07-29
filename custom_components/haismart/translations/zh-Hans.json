@@ -165,6 +165,12 @@
       },
       "local_key": {
         "name": "本地密钥"
+      },
+      "coil_temperature": {
+        "name": "Coil temperature"
+      },
+      "discharge_temperature": {
+        "name": "Discharge temperature"
       }
     },
     "switch": {
@@ -193,6 +199,14 @@
           "level2": "节能 6",
           "level3": "节能 7"
         }
+      }
+    },
+    "binary_sensor": {
+      "compressor": {
+        "name": "Compressor"
+      },
+      "fan": {
+        "name": "Fan"
       }
     }
   },

@@ -75,6 +75,8 @@ One device per air conditioner, with:
 | **Eco** | Eco level, on models where it's confirmed |
 | **Power** | Live power draw in watts, on units that report it |
 | **Compressor current / frequency** *(diagnostic)* | What the outdoor unit is actually doing |
+| **Coil / discharge temperature** *(diagnostic)* | Evaporator and compressor-discharge temperatures |
+| **Compressor / Fan** *(diagnostic, on/off)* | Whether the compressor and indoor fan are actually running |
 | **Local key** *(diagnostic, off by default)* | Your unit's key, so it rides along in HA backups |
 
 Which of these appear depends on your model — the integration only exposes controls it can actually

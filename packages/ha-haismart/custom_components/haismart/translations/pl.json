@@ -165,6 +165,12 @@
       },
       "local_key": {
         "name": "Klucz lokalny"
+      },
+      "coil_temperature": {
+        "name": "Coil temperature"
+      },
+      "discharge_temperature": {
+        "name": "Discharge temperature"
       }
     },
     "switch": {
@@ -193,6 +199,14 @@
           "level2": "Eco 6",
           "level3": "Eco 7"
         }
+      }
+    },
+    "binary_sensor": {
+      "compressor": {
+        "name": "Compressor"
+      },
+      "fan": {
+        "name": "Fan"
       }
     }
   },

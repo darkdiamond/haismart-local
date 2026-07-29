@@ -49,6 +49,7 @@ def make_extended_frame(
     coil_temp: float = 12.0,
     discharge_temp: int = 58,
     compressor: bool = True,
+    fan: bool = True,
 ) -> bytes:
     """Build a synthetic 141-byte extended-status report (offsets per uss.parse_extended_status).
 
@@ -67,7 +68,9 @@ def make_extended_frame(
     frame[129] = discharge_temp + 64
     frame[133] = frequency_hz
     frame[134:136] = int(round(current_a * 10)).to_bytes(2, "big")
-    frame[136:138] = (0x0001 if compressor else 0x0000).to_bytes(2, "big")
+    # actuator word: bits 0-1 compressor, bits 2-3 indoor fan
+    actuators = (0x01 if compressor else 0) | (0x04 if fan else 0)
+    frame[136:138] = actuators.to_bytes(2, "big")
     return bytes(frame)
 
 

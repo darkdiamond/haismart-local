@@ -927,6 +927,7 @@ def test_parse_extended_status_decodes_a_running_unit():
     assert got["compressor_current_a"] == 3.0
     assert got["compressor_frequency_hz"] == 35
     assert got["compressor_running"] is True
+    assert got["fan_running"] is True
     # a cold evaporator while cooling, and a hot discharge line
     assert got["coil_temperature"] == 12.0
     assert got["discharge_temperature"] == 57.0
@@ -938,6 +939,7 @@ def test_parse_extended_status_decodes_an_idle_unit():
     assert got["compressor_current_a"] == 0.0
     assert got["compressor_frequency_hz"] == 0
     assert got["compressor_running"] is False
+    assert got["fan_running"] is False
     assert got["coil_temperature"] == 28.0      # coil sits at room temperature
 
 

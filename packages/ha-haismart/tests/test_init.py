@@ -110,6 +110,16 @@ async def test_extended_status_creates_power_sensors(hass: HomeAssistant, mock_u
     assert current is not None and float(current.state) == 4.0
     frequency = hass.states.get("sensor.downstairs_ac_frequency")
     assert frequency is not None and float(frequency.state) == 43.0
+    coil = hass.states.get("sensor.downstairs_ac_coil_temperature")
+    assert coil is not None and float(coil.state) == 12.0
+    discharge = hass.states.get("sensor.downstairs_ac_discharge_temperature")
+    assert discharge is not None and float(discharge.state) == 58.0
+
+    # running-state binary sensors
+    comp = hass.states.get("binary_sensor.downstairs_ac_compressor")
+    assert comp is not None and comp.state == "on"
+    fan = hass.states.get("binary_sensor.downstairs_ac_fan")
+    assert fan is not None and fan.state == "on"
 
     # the ordinary status fields still decode from the same cycle
     assert hass.states.get(CLIMATE).state == "cool"

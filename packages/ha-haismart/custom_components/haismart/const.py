@@ -6,6 +6,7 @@ from homeassistant.const import Platform
 DOMAIN = "haismart"
 
 PLATFORMS: list[Platform] = [
+    Platform.BINARY_SENSOR,
     Platform.CLIMATE,
     Platform.SENSOR,
     Platform.SWITCH,

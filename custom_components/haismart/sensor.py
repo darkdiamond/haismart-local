@@ -69,6 +69,10 @@ SENSORS: tuple[HaismartSensorDescription, ...] = (
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfPower.WATT,
+        # Diagnostic: it's a derived reading (computed from the current sensor), and this groups it
+        # with the other telemetry. Still MEASUREMENT, so it records into long-term statistics and a
+        # Riemann-sum helper can turn it into the kWh the Energy dashboard needs.
+        entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda s: s.get("power_w"),
     ),
     HaismartSensorDescription(
@@ -86,6 +90,28 @@ SENSORS: tuple[HaismartSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfFrequency.HERTZ,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda s: s.get("compressor_frequency_hz"),
+    ),
+    # Refrigeration-circuit temperatures, also from the extended report. Diagnostic: useful for
+    # spotting a unit that is running but not actually cooling (a cold coil while cooling, a hot
+    # discharge line). They carry a translation_key because "temperature" alone is ambiguous once
+    # there are several — the device-class name would make three identical "Temperature" entities.
+    HaismartSensorDescription(
+        key="coil_temperature",
+        translation_key="coil_temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda s: s.get("coil_temperature"),
+    ),
+    HaismartSensorDescription(
+        key="discharge_temperature",
+        translation_key="discharge_temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda s: s.get("discharge_temperature"),
     ),
 )
 
