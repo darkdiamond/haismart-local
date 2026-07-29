@@ -73,10 +73,55 @@ One device per air conditioner, with:
 | **Outdoor temperature** | Outdoor probe, on units that have one |
 | **Switches** | Strong, Quiet, Health, Sleep, Display light |
 | **Eco** | Eco level, on models where it's confirmed |
+| **Power** | Live power draw in watts, on units that report it |
+| **Compressor current / frequency** *(diagnostic)* | What the outdoor unit is actually doing |
 | **Local key** *(diagnostic, off by default)* | Your unit's key, so it rides along in HA backups |
 
 Which of these appear depends on your model — the integration only exposes controls it can actually
 drive on your unit, rather than showing buttons that do nothing.
+
+### Energy monitoring
+
+Units that report their power draw get a **Power** sensor in watts. That is a live reading, so it
+records into Home Assistant's history and long-term statistics on its own — but the **Energy
+dashboard** needs a running total in kWh, which is a different thing.
+
+To get one, add a Riemann-sum integral helper over the power sensor:
+
+1. **Settings → Devices & services → Helpers → Create helper → Integral sensor**
+2. Pick your AC's **Power** sensor as the input
+3. Metric prefix **k** (kilo), time unit **hours** — that gives you kWh
+4. Method: **Trapezoidal** is the sensible default for a value that ramps
+
+Then add the resulting kWh sensor under **Settings → Dashboards → Energy → Individual devices**.
+
+Two things worth knowing before you trust the numbers:
+
+- **Check the helper's state class is `total_increasing`.** If the Energy dashboard will not offer
+  your new sensor, this is almost always why — a helper left on `total` can also produce spikes in
+  long-term statistics after a restart.
+- **It is an estimate, and so is the manufacturer's.** The figure comes from the unit's own current
+  measurement, and integrating a value sampled every 30 seconds cannot capture everything in between.
+  The vendor app's energy screens are estimates too — by their own wording they are "based on the
+  operation status data of devices", and they stop counting entirely while the unit is offline. If you
+  need billing-grade numbers, use a clamp meter or a metering plug.
+
+These units keep no running energy total of their own, which is why the integration does not offer a
+kWh sensor directly — there is nothing to read, so it would have to be invented.
+
+### How often it polls
+
+The integration polls every **30 seconds** by default (minimum 10), and you can change it under the
+integration's **Configure** menu. One poll fetches everything in a single connection — status,
+faults and the power figures — because these units accept only one connection at a time.
+
+If you want a different rhythm than a fixed interval, Home Assistant has a documented way that works
+for any integration: open the integration's **⋮ → System options** and turn off *Enable polling for
+updates*, then drive it from an automation calling `homeassistant.update_entity` on whatever schedule
+or trigger you like. That is useful if, say, you only want frequent readings while the AC is running.
+
+Polling faster than 10 seconds is not offered on purpose: each cycle is a full connection to the
+unit, and the readings simply do not change fast enough to be worth it.
 
 ## Before you install
 

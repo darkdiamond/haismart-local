@@ -101,7 +101,7 @@ each back to its STD code for the profile to name. Control uses the model's own 
 | `targetTemperature` | byte 92 | `byte + 16` |
 | `windDirectionVertical` | byte 93 | bit 3 (`0x08`) = auto up-down swing |
 | `operationMode` / `windSpeed` | byte 94 | `byte >> 5` and `byte & 0x07` |
-| `onOffStatus` | byte 97 | non-zero = on |
+| `onOffStatus` | byte 97 | **bit 0 only** (`byte & 0x01`) |
 | `windDirectionHorizontal` | word 4, bits 0–2 | `0` fixed, `7` auto |
 | `indoorTemperature` | per layout | `byte / 2` |
 | `outdoorTemperature` | per layout | `byte - 64` |
@@ -109,8 +109,57 @@ each back to its STD code for the profile to name. Control uses the model's own 
 `windSpeed` is masked with `0x07`, not `0x0F`: bit 3 of byte 94 belongs to `specialMode`, so a wider
 mask invents a fan code of `speed + 8`.
 
+Byte 97 needs the same care for the opposite reason: it packs **eight** flags, of which on/off is only
+bit 0. The rest are health (1), electric heat (2), boost (3), quiet (4), sleep (5), child lock (6) and
+buzzer (7). Reading the whole byte reports the unit as on whenever any of those is set.
+
 A unit without a given sensor reports `0`, which the raw outdoor formula turns into a confident
 −64 °C. Absent sensors must decode to *absent*, not to a fabricated reading.
+
+## Extended status (running power / compressor figures)
+
+Besides the ordinary status query, units can be asked for an **extended status** report:
+
+```
+request   ff ff 0a 00*6 01 4d fe 56          (read-only; changes nothing)
+reply     a second report, command word 7d01 — 141 bytes on the classic family
+```
+
+The reply repeats the ordinary status words and appends an engineering block. One request therefore
+returns *both* reports plus the fault bitmap in a single session, which matters because these units
+accept only one connection at a time — the integration folds this into its normal poll rather than
+opening a second one.
+
+Confirmed offsets (classic family, 141-byte reply):
+
+| Field | Where | Decode |
+|---|---|---|
+| power | bytes 126–127 | BE16, watts |
+| indoor coil temperature | byte 128 | `byte * 0.5 - 20` |
+| compressor discharge temperature | byte 129 | `byte - 64` |
+| compressor frequency | byte 133 | Hz |
+| compressor current | bytes 134–135 | BE16, `/ 10` amps |
+| compressor running | byte 137 | bits 0–1 non-zero |
+
+Two things to know before relying on these:
+
+- **Power is not an independent measurement.** Across every reading observed on one unit it tracked
+  the reported current exactly, as `220 x amps + 30` — i.e. it is computed from the current sensor at
+  a nominal mains voltage, with a small fixed baseline. Current is the real sensor, quantised to
+  0.5 A. Do not treat watts and amps as two independent readings, and do not hard-code the 220: a
+  unit on a different nominal supply may well use a different constant.
+- **There is no running energy total.** The report has a field for a cumulative watt-hour counter, but
+  it reads zero on every unit tested and in every reading taken from them, so a kWh sensor would
+  have to be invented rather than read. Integrate the power sensor host-side instead.
+
+Not every unit answers the query. One that does not simply refuses this one frame — with a short
+reply carrying no data — and still sends normal status, so it is safe to ask unconditionally. The
+integration asks once, notes the answer, and stops asking if the unit does not support it.
+
+A session can therefore return three different report kinds sharing the same container: status
+(`6d01`), the fault bitmap (`0f5a`, 101 bytes) and extended status (`7d01`). **Tell them apart by the
+command word, not by length or arrival order** — the fault frame is long enough to pass a status
+parser's length checks and decodes into a plausible-looking powered-off unit with a 16 °C setpoint.
 
 ## grSetDAC control words
 

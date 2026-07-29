@@ -1,7 +1,12 @@
-"""Temperature sensors decoded from the AC's full-status report.
+"""Sensors decoded from the AC's status reports.
 
-Only fields the read path actually decodes become entities (this basic cooling unit reports
-no humidity/air-quality hardware — those attributes read 0 in the report and are skipped).
+Only fields the read path actually decodes become entities (a basic cooling unit reports no
+humidity/air-quality hardware — those attributes read 0 in the report and are skipped).
+
+Units that answer the extended-status query also expose the running power draw, compressor current
+and compressor frequency. `power` is published as a MEASUREMENT in watts; to feed the Energy
+dashboard, add a Riemann-sum integral helper over it to produce the kWh total the dashboard needs —
+see the README. These units keep no running energy total of their own, so there is no kWh to read.
 """
 from __future__ import annotations
 
@@ -15,7 +20,13 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import EntityCategory, UnitOfTemperature
+from homeassistant.const import (
+    EntityCategory,
+    UnitOfElectricCurrent,
+    UnitOfFrequency,
+    UnitOfPower,
+    UnitOfTemperature,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -45,6 +56,36 @@ SENSORS: tuple[HaismartSensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         value_fn=lambda s: s.get("outdoor_temperature"),
+    ),
+    # --- running power / compressor figures, from the extended-status report ---------------------
+    # Present only on units that answer the extended query; `native_value` returns None on the rest,
+    # so these exist but stay unavailable rather than appearing and vanishing between polls.
+    #
+    # They deliberately carry no name or translation_key: with `has_entity_name`, an unnamed entity
+    # takes its name from its device class, which Home Assistant already translates into every
+    # language it ships. Naming them here would mean 30 new translation files for no gain.
+    HaismartSensorDescription(
+        key="power_w",
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        value_fn=lambda s: s.get("power_w"),
+    ),
+    HaismartSensorDescription(
+        key="compressor_current_a",
+        device_class=SensorDeviceClass.CURRENT,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda s: s.get("compressor_current_a"),
+    ),
+    HaismartSensorDescription(
+        key="compressor_frequency_hz",
+        device_class=SensorDeviceClass.FREQUENCY,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfFrequency.HERTZ,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda s: s.get("compressor_frequency_hz"),
     ),
 )
 

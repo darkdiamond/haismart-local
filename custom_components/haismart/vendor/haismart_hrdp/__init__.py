@@ -50,12 +50,14 @@ from .uss import (
     decode_message,
     derive_status_layout,
     encode_message,
+    extended_status_epp_frame,
     getallproperty_epp_frame,
     grsetdac_baseline_from_status,
     grsetdac_op_frame,
     hello_done_message,
     hello_message,
     localkey_aes_key,
+    parse_extended_status,
     parse_full_status,
     parse_hello_resp,
     parse_status_container,
@@ -88,6 +90,7 @@ __all__ = [
     "biz_decrypt",
     "localkey_aes_key",
     "parse_status_container",
+    "parse_extended_status",
     "parse_full_status",
     "status_layout",
     "derive_status_layout",
@@ -106,6 +109,7 @@ __all__ = [
     "probe_localkey_version",
     # CONTROL / write
     "build_epp_frame",
+    "extended_status_epp_frame",
     "getallproperty_epp_frame",
     "build_cae_op_request",         # outbound CAE op envelope
     "build_op_request_message",     # full outbound op message

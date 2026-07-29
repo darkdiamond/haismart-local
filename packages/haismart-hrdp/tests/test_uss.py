@@ -803,3 +803,93 @@ def test_split_messages_stops_on_a_desynchronised_frame():
     bad = good + b"\x00\x00\xea\x61\x00\x03rubbish"
     assert list(uss.split_messages(bad)) == [good]     # the good frame survives, the junk is dropped
     assert list(uss.split_messages(b"\x00\x00\xea\x61\x00\x00")) == []   # total==0, must not loop
+
+
+# --- extended status (running power / compressor figures) ----------------------------------------
+
+# Verbatim extended-status reports from two real units in opposite states: one cooling under an ECO
+# current cap, one idle. 141 bytes, inner report command 7d01.
+EXT_COOLING = bytes.fromhex(
+    "00002715000000004e560100c0030200c004010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000003dffff3a000000000000067d010b0c22000201003f0800000038005f8000010000000000000000000000000000000002b2407900000023001e022500002e")
+EXT_IDLE = bytes.fromhex(
+    "00002715000000004e560100bb030200bb04010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000003dffff3a000000000000067d01070022000200000708000000420059800001000000000000000000000000000000000000606800000000000002200000fe")
+
+
+def test_extended_status_frame_is_a_read_only_query():
+    """The query changes nothing and matches the checksum rule the unit enforces."""
+    frame = uss.extended_status_epp_frame()
+    assert frame == bytes.fromhex("ffff0a000000000000014dfe56")
+    body = frame[2:-1]
+    assert frame[-1] == sum(body) & 0xFF
+    assert frame[9] == 0x01                     # a plain request, not a set
+    assert frame[10:12] == uss.EPP_CMD_EXTENDED_STATUS
+
+
+def test_parse_extended_status_decodes_a_running_unit():
+    got = uss.parse_extended_status(EXT_COOLING)
+    assert got["power_w"] == 690
+    assert got["compressor_current_a"] == 3.0
+    assert got["compressor_frequency_hz"] == 35
+    assert got["compressor_running"] is True
+    # a cold evaporator while cooling, and a hot discharge line
+    assert got["coil_temperature"] == 12.0
+    assert got["discharge_temperature"] == 57.0
+
+
+def test_parse_extended_status_decodes_an_idle_unit():
+    got = uss.parse_extended_status(EXT_IDLE)
+    assert got["power_w"] == 0
+    assert got["compressor_current_a"] == 0.0
+    assert got["compressor_frequency_hz"] == 0
+    assert got["compressor_running"] is False
+    assert got["coil_temperature"] == 28.0      # coil sits at room temperature
+
+
+def test_parse_extended_status_rejects_anything_else():
+    """Only the confirmed extended layout decodes — never a guess at another report's bytes."""
+    assert uss.parse_extended_status(b"") == {}
+    assert uss.parse_extended_status(REAL_STATUS_DOWN) == {}          # ordinary status report
+    assert uss.parse_extended_status(EXT_COOLING[:-1]) == {}          # wrong length
+    # right length, but the report command says it is something else
+    other = bytearray(EXT_COOLING)
+    at = other.index(b"\xff\xff")
+    other[at + 10:at + 12] = b"\x6d\x01"
+    assert uss.parse_extended_status(bytes(other)) == {}
+
+
+def test_status_parser_ignores_the_other_report_kinds():
+    """A session carries status, faults and (when asked) extended status in the same container.
+
+    The fault frame is long enough to pass the status length checks and decodes into a confident
+    powered-off unit with a 16 degC setpoint, so it must be rejected by report kind rather than by
+    the order the unit happens to send frames in.
+    """
+    assert uss.parse_full_status(EXT_COOLING) == {}
+    alarm = bytes.fromhex(
+        "00002715000000004e5601000003020000040100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000015ffff12000000000000040f5a00000000000000007f")
+    assert len(alarm) == 101
+    assert uss.parse_full_status(alarm) == {}
+
+
+def test_power_reads_only_the_on_off_bit():
+    """byte 97 packs eight flags; only bit 0 is on/off.
+
+    Reading the whole byte reported the unit as ON whenever health / boost / quiet / sleep / lock /
+    buzzer was set — and this integration's own switches write four of them, so turning on Quiet
+    while the unit was off flipped the thermostat to "on".
+    """
+    assert uss.parse_full_status(REAL_STATUS_UP)["power"] is False
+    w3 = int.from_bytes(REAL_STATUS_UP[96:98], "big")
+    assert w3 & 0x01 == 0, "fixture precondition: this unit is off"
+    for bit in range(1, 8):
+        blob = bytearray(REAL_STATUS_UP)
+        blob[96:98] = (w3 | (1 << bit)).to_bytes(2, "big")
+        at = blob.index(b"\xff\xff")
+        blob[-1] = sum(blob[at + 2:-1]) & 0xFF          # keep the frame checksum valid
+        got = uss.parse_full_status(bytes(blob))
+        assert got["power"] is False, f"bit {bit} of byte 97 leaked into power"
+    blob = bytearray(REAL_STATUS_UP)
+    blob[96:98] = (w3 | 0x01).to_bytes(2, "big")
+    at = blob.index(b"\xff\xff")
+    blob[-1] = sum(blob[at + 2:-1]) & 0xFF
+    assert uss.parse_full_status(bytes(blob))["power"] is True
