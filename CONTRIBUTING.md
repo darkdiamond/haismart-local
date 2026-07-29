@@ -29,6 +29,15 @@ deviceIds/keys — never a real device `localKey`, MAC, or LAN address (see [SEC
 - **No unverified frames to a real AC.** The encoder only emits fields/values in its allowlist
   (`set_grsetdac_field` raises otherwise) — keep it that way: don't widen the grSetDAC map without
   evidence for the new field/value.
+- **Only surface a reading you've confirmed is real.** The status and extended reports contain more
+  fields than the integration exposes. A field becomes an entity only when it's been seen to behave
+  correctly on real hardware — several were left out because they didn't (e.g. an outdoor-fan state
+  that reads "on" while the unit is off). And a reading a unit doesn't actually have must decode to
+  *unavailable*, never a fabricated value: a missing temperature reads `0`, which naive maths turns
+  into a confident −64 °C that then poisons long-term statistics. `parse_extended_status` and the
+  temperature helpers already guard this; keep new fields to the same bar. The extended report's byte
+  offsets are **per report family** — the ones in `parse_extended_status` are for the classic
+  (141-byte) family, so another family needs its own offsets confirmed before it can decode there.
 - **Never commit secrets.** `*.local.json` and `*.apk` are git-ignored; keep them that way.
 - **`custom_components/` at the repo root is generated** — the HACS-installable build with the two
   libraries vendored in. Don't edit it directly: change the source under `packages/`, then run
@@ -44,6 +53,24 @@ deviceIds/keys — never a real device `localKey`, MAC, or LAN address (see [SEC
   file, so a hand-merge produces a tree matching neither side. Take either version
   (`git checkout --ours` / `--theirs`), then re-run `scripts/build-hacs.sh` and commit the result.
 - Match existing style; keep changes focused; add tests for behaviour changes.
+
+## Entity names and translations
+
+A new named entity (a `translation_key` on a sensor, switch, etc.) needs a matching string in
+`packages/ha-haismart/custom_components/haismart/strings.json` **and** in every file under
+`translations/`. The integration ships ~30 languages and `scripts/check-translations.py` enforces
+strict key parity — a key present in some files but not others fails, so adding it to `en.json`
+alone will not do.
+
+```bash
+python3 scripts/check-translations.py    # key parity + placeholder integrity across every language
+```
+
+If you can't provide a real translation for a language, use the English string for now (present and
+non-empty passes the check); a later PR can localise it. Diagnostic engineering entities can instead
+skip `translation_key` and lean on their device class, which Home Assistant already translates — but
+only when the device-class name is unambiguous (several temperatures all called "Temperature" is not,
+so those carry a `translation_key`).
 
 ## Adding a new AC model
 
