@@ -8,6 +8,7 @@ import pytest
 from conftest import (
     heat_capable_digital_model,
     make_compact12_frame,
+    make_extended36_frame,
     make_status_frame,
 )
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
@@ -120,6 +121,41 @@ async def test_compact12_family_decodes_and_controls_via_4d5f(
     words = sent[12:-1]
     assert len(words) == 24
     assert words[(12 - 1) * 2 + 1] == 24 - 16  # setpoint packed at word 12
+
+
+async def test_extended36_family_decodes_and_controls_from_word_20(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """The 165-byte extended-36 family (issue #5): full decode plus control as a `6001` group-set
+    whose baseline is sliced from report word 20. Before this family existed the classic partial
+    decode read the leading media block and reported a 48 C setpoint on a unit that was off."""
+    frame = make_extended36_frame(power=True, target_temp=22, indoor_temp=27.5, fan_code=1)
+    mock_uss.read.return_value = [frame]
+    mock_uss.send.baseline = frame
+    entry = await _setup(hass)
+    assert entry.state is ConfigEntryState.LOADED
+
+    climate = hass.states.get(CLIMATE)
+    assert climate is not None and climate.state == "cool"
+    assert climate.attributes["current_temperature"] == 27.5
+    assert climate.attributes["temperature"] == 22.0
+    assert climate.attributes["fan_mode"] == "high"
+
+    coord = entry.runtime_data
+    assert coord.unknown_layout is None          # a KNOWN family — no "new model" repair
+    assert coord.read_only_layout is None        # writable family — control enabled
+    # the w22 boolean block is read back through the wire model, so the switches show real state
+    assert coord.current_field("screenDisplayStatus") == 1
+    assert coord.current_field("rapidMode") == 0
+    assert hass.states.get("switch.downstairs_ac_display_light").state == "on"
+
+    await coord.async_send_control({"targetTemperature": 24 - 16})
+    sent = mock_uss.send.last_frame
+    assert sent[:2] == b"\xff\xff" and sent[10:12] == b"\x60\x01"   # classic group command
+    words = sent[12:-1]
+    assert len(words) == 10                                        # five words, not the classic six
+    assert words[0] == 24 - 16                                     # setpoint at word 1 b8
+    assert words[2:] == frame[132:140]                             # words 2..5 preserved (w21..w24)
 
 
 def _sent_field(send, name: str) -> int:

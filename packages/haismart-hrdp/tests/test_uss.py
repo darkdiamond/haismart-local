@@ -528,6 +528,31 @@ STATUS_117_FANHI_SWING = bytes.fromhex(
     "0000000000000003000000030001000000000006fa"
 )
 
+# --- 165-byte "extended-36" family (haismart-local issue #5, HSU-12KCROC(IN)-R32) --------
+# The CLASSIC climate block displaced by 19 words: a voice/media module occupies report words 1..19
+# (inert on a plain split AC, but it is why the classic partial decode reads byte 92 as a 48 C
+# setpoint — that byte is the module's `volume`), then targetTemperature@w20.b8, mode@w21.b13,
+# fan@w21.b8, the boolean word@w22, horizontal swing@w23, indoor@w25.b8, outdoor@w26.b8. Two real
+# decrypted reports from the reporter's diagnostics. No secret: the all-zero CAE report prefix.
+#   OFF: power off, last setpoint 22, room 30.0, mode cool, fan high, vertical swing off
+STATUS_165_OFF = bytes.fromhex(
+    "00002715000000004e5601000003020000040100000000000000000000000000"
+    "0000000000000000000000000000000000000000000000000000000000000000"
+    "00000000000000000000000000000055ffff52000000000000066d0120640000"
+    "0000000000000000000000000000000000000000000000000000000000000100"
+    "00000600210002020007000c3c00000000020000000000000000000000000000"
+    "00000000c7"
+)
+#   ON: power on, setpoint 20, room 27.5, mode cool, fan high, vertical swing on
+STATUS_165_ON = bytes.fromhex(
+    "00002715000000004e5601000003020000040100000000000000000000000000"
+    "0000000000000000000000000000000000000000000000000000000000000000"
+    "00000000000000000000000000000055ffff52000000000000066d0120640000"
+    "0000000000000000000000000000000000000000000000000000000000000100"
+    "00000408210002030007000c3700000000020000000000000000000000000000"
+    "00000000c9"
+)
+
 
 def test_status_layout_recognises_both_report_lengths():
     assert len(STATUS_125) == 125
@@ -628,6 +653,77 @@ def test_compact12_control_encodes_a_4d5f_group_set():
         wm.encode_control(base, {"healthMode": 1})
     with pytest.raises(ValueError, match="not a supported code"):
         wm.encode_control(base, {"operationMode": 9})
+
+
+def test_extended36_decodes_the_real_reports():
+    """The 165-byte family (issue #5). Its climate block sits 19 words into the report — the classic
+    partial decode reads that leading media block instead and reports a 48 C setpoint on a unit that
+    is off, which is the bug this family fixes."""
+    from haismart_hrdp import profile_for
+
+    prof = profile_for("AAD180E00")
+    off = uss.parse_full_status(STATUS_165_OFF, prof)
+    assert off == {
+        "power": False, "target_temperature": 22.0, "current_temperature": 30.0,
+        "operation_mode": "1", "wind_speed": "1", "swing_vertical": False,
+        "swing_horizontal": True, "mode": "cool", "fan_mode": "high",
+        "layout": "extended36", "writable": True,
+    }
+    on = uss.parse_full_status(STATUS_165_ON, prof)
+    assert on["power"] is True and on["target_temperature"] == 20.0
+    assert on["current_temperature"] == 27.5 and on["swing_vertical"] is True
+    # outdoorTemperature IS mapped, but both units report the 0 "no probe" sentinel, which must read
+    # as absent rather than a confident -64 C that would poison long-term statistics
+    assert "outdoor_temperature" not in off and "outdoor_temperature" not in on
+    # the classic decode's wrong answer, for the record: byte 92 is the media module's `volume`
+    assert STATUS_165_OFF[92] + 16 == 48
+
+
+def test_extended36_reads_the_secondary_toggles_through_its_write_map():
+    """The w22 boolean block is exposed via the write map (what the switch entities read back), not
+    the read fields. Both captures have health + display light on and the rest off."""
+    wm = uss.select_wire_model(165)
+    assert wm is not None and wm.family == "extended36"
+    got = {
+        f: wm.current_write_value(STATUS_165_OFF, f)
+        for f in ("healthMode", "rapidMode", "muteStatus", "silentSleepStatus",
+                  "screenDisplayStatus", "onOffStatus")
+    }
+    assert got == {"healthMode": 1, "rapidMode": 0, "muteStatus": 0, "silentSleepStatus": 0,
+                   "screenDisplayStatus": 1, "onOffStatus": 0}
+    assert wm.current_write_value(STATUS_165_ON, "onOffStatus") == 1
+    # a std_enum reads back as the STD code the caller passes in, not the raw wire value
+    assert wm.current_write_value(STATUS_165_ON, "operationMode") == 1     # cool
+    assert wm.current_write_value(STATUS_165_ON, "windSpeed") == 1         # high
+    assert wm.current_write_value(STATUS_165_ON, "ecoMode") is None        # not mapped on this family
+
+
+def test_extended36_control_encodes_a_6001_group_set_from_word_20():
+    """Control on the 165 family: the same `6001` group-set the classic path sends, with the same
+    five-word bit map — only the *baseline* comes from report word 20 (byte 130) rather than word 1,
+    because that is where this family keeps the climate block."""
+    wm = uss.select_wire_model(165)
+    assert wm is not None and wm.group_cmd == b"\x60\x01" and wm.write_base_word == 20
+    base = wm.baseline_words(STATUS_165_ON)
+    assert len(base) == 10                                   # words 1..5
+    assert bytes(base) == STATUS_165_ON[130:140]             # sliced past the media block
+
+    words = wm.encode_control(base, {"targetTemperature": 24 - 16, "operationMode": 6})
+    frame = uss.build_epp_frame(0x01, wm.group_cmd, words)
+    assert frame[:2] == b"\xff\xff" and frame[10:12] == b"\x60\x01"
+    assert (frame[2] + sum(frame[3:-1])) & 0xFF == frame[-1]  # checksum reproduces
+    assert words[0] == 24 - 16                               # targetTemperature word1 b8
+    assert (words[2] << 8 | words[3]) >> 13 == 6             # operationMode word2 b13 -> fan_only
+    assert words[4:] == base[4:]                             # words 3..5 preserved untouched
+
+    # the encoder refuses what it cannot map: an unknown field, an unnamed enum code, and a setpoint
+    # outside 16..30 that would otherwise fit the 8-bit field
+    with pytest.raises(KeyError):
+        wm.encode_control(base, {"ecoMode": 5})
+    with pytest.raises(ValueError, match="not a supported code"):
+        wm.encode_control(base, {"operationMode": 3})
+    with pytest.raises(ValueError, match="outside the 0..14"):
+        wm.encode_control(base, {"targetTemperature": 99})
 
 
 def test_grsetdac_baseline_still_classic_only():

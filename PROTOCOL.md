@@ -85,6 +85,21 @@ The first such family is **compact-12** (117-byte report, e.g. HSU-12HFMF): a 12
 each back to its STD code for the profile to name. Control uses the model's own group-set command
 (`4d5f`, vs the classic `6001`), a read-modify-write over the same 12-word array.
 
+The second is **extended-36** (165-byte report, e.g. HSU-12KCROC(IN)-R32, `deviceType 02012036`).
+This one is not a different bit map at all: it is the *classic* map **displaced by 19 words**. The
+report begins with a voice/media module block (volume, playback, dialect …) that the model's generic
+preset describes but a plain split AC leaves inert, and the climate attributes follow it —
+`targetTemperature` at word 20 bit 8, `operationMode` at word 21 bit 13, `windSpeed` at word 21
+bit 8, the boolean block at word 22, `windDirectionHorizontal` at word 23, `indoorTemperature` at
+word 25 bit 8 and `outdoorTemperature` at word 26 bit 8. That displacement is exactly why the classic
+*partial* decode misfires on this model rather than simply falling short: byte 92 is the media
+block's `volume`, which reads as a 48 °C setpoint.
+
+Its control path is the classic `6001` group-set with the classic five-word bit map — the op is
+unchanged; only the *baseline* is sliced from report word 20 instead of word 1. That displacement is
+what `WireModel.write_base_word` expresses: where a family keeps its control block in the report is
+independent of where that block sits in the op.
+
 > **Future consolidation.** The classic family is currently a bespoke decoder/encoder while the newer
 > families are data-driven wire models — two paradigms for the same idea. The plan, once the wire-model
 > path has more confirmed models behind it, is to fold the classic family into the registry as one more
