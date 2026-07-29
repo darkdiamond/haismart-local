@@ -33,6 +33,16 @@ deviceIds/keys — never a real device `localKey`, MAC, or LAN address (see [SEC
 - **`custom_components/` at the repo root is generated** — the HACS-installable build with the two
   libraries vendored in. Don't edit it directly: change the source under `packages/`, then run
   `scripts/build-hacs.sh` and commit the regenerated component.
+
+  This is easy to get wrong, so three things now catch it. `scripts/build-hacs.sh` prints what it
+  discarded if you had edited the generated tree; `scripts/check-hacs-build.sh` (also run by
+  `scripts/test.sh`) fails if the committed tree does not match what the build would produce; and CI
+  runs the same comparison. The suites alone will not catch it — they import the `packages/` copy, so
+  a stale or hand-edited generated tree keeps them green.
+
+  **On a merge conflict inside `custom_components/`, do not hand-resolve it.** It is a generated
+  file, so a hand-merge produces a tree matching neither side. Take either version
+  (`git checkout --ours` / `--theirs`), then re-run `scripts/build-hacs.sh` and commit the result.
 - Match existing style; keep changes focused; add tests for behaviour changes.
 
 ## Adding a new AC model

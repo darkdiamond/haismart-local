@@ -13,6 +13,17 @@ HRDP="$ROOT/packages/haismart-hrdp/src/haismart_hrdp"
 EXTRACTOR="$ROOT/packages/haismart-extractor/src/haismart_extractor"
 DEST="$ROOT/custom_components/haismart"
 
+# custom_components/ is GENERATED. Editing it directly is a silent trap: the next build wipes the
+# edit, and because the tests import the packages/ copy they keep passing while the change vanishes.
+# So before destroying it, name anything the regeneration is about to discard.
+if [ -z "${QUIET_BUILD:-}" ] && git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+  if ! git -C "$ROOT" diff --quiet -- custom_components 2>/dev/null; then
+    tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+    cp -r "$DEST" "$tmp/before"
+    echo "==> note: custom_components/ has uncommitted changes; checking whether this build keeps them"
+  fi
+fi
+
 echo "==> regenerating $DEST"
 rm -rf "$DEST"
 mkdir -p "$DEST/vendor"
@@ -62,6 +73,25 @@ else:
     t = shim + t
 open(p, "w", encoding="utf-8").write(t)
 PY
+
+# Report anything the regeneration threw away, so an edit made in the wrong place is caught here
+# rather than going quietly missing.
+if [ -n "${tmp:-}" ] && [ -d "$tmp/before" ]; then
+  if ! diff -rq "$tmp/before" "$DEST" >/dev/null 2>&1; then
+    echo
+    echo "!!  This build DISCARDED local changes under custom_components/:"
+    # `diff` exits 1 when files differ and the script runs under `set -e -o pipefail`, so without
+    # this the build would abort here - before printing the advice that makes the warning useful.
+    diff -rq "$tmp/before" "$DEST" 2>&1 \
+      | sed "s|$tmp/before|your edit|g; s|$DEST|regenerated|g; s|^|!!    |" || true
+    echo "!!"
+    echo "!!  custom_components/ is generated. Make the change in packages/ instead:"
+    echo "!!    the component      -> packages/ha-haismart/custom_components/haismart/"
+    echo "!!    the helper libs     -> packages/haismart-hrdp/src, packages/haismart-extractor/src"
+    echo "!!  then re-run this script."
+    echo
+  fi
+fi
 
 echo "==> done. Files:"
 find "$DEST" -maxdepth 2 -type f | sed "s|$ROOT/||" | sort

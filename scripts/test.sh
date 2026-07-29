@@ -13,4 +13,10 @@ for pkg in haismart-hrdp haismart-extractor ha-haismart; do
   ( cd "$root/packages/$pkg" && "$py" -m pytest -q -p no:cacheprovider ) || fail=1
   echo
 done
+# custom_components/ is generated from packages/ and committed for HACS. The suites above import
+# the packages/ copy, so a stale or hand-edited generated tree passes them all. Check it here too,
+# rather than letting CI be the first thing that notices.
+echo "=== HACS build in sync ==="
+"$root/scripts/check-hacs-build.sh" || fail=1
+
 exit $fail
