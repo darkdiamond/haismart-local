@@ -38,9 +38,11 @@ from haismart_hrdp import (
     async_read_status,
     async_send_op,
     build_epp_frame,
+    extended_status_epp_frame,
     grsetdac_baseline_from_status,
     grsetdac_op_frame,
     model_enum_codes,
+    parse_extended_status,
     parse_full_status,
     probe_localkey_version,
     profile_for,
@@ -190,6 +192,10 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.model_codes: dict[str, set[int]] = _model_authorized_codes(self.digital_model)
         self.localkey_version: int | None = entry.data.get(CONF_LOCALKEY_VERSION)
         self.last_raw_status: bytes | None = None
+        # Whether this unit answers the extended-status query (running power / compressor figures).
+        # None = not yet known; settled on the first cycle that produces a status report.
+        self.supports_extended: bool | None = None
+        self._ask_extended = True
         self._misses = 0
         # length of a status report we could only partially decode, or None. Drives the repair.
         self.unknown_layout: int | None = None
@@ -211,12 +217,23 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     async def _async_update_data(self) -> dict[str, Any]:
+        # One connection per cycle: these units accept a single session at a time, so the
+        # extended-status query rides along inside the ordinary read rather than costing a second
+        # connection or its own poll interval. `_ask_extended` latches off if a unit turns out not to
+        # cope with it, so an unfamiliar model degrades to plain status instead of failing to poll.
         try:
             blobs = await async_read_status(
-                self.host, self.device_id, self._local_key, timeout=READ_TIMEOUT
+                self.host, self.device_id, self._local_key, timeout=READ_TIMEOUT,
+                extra_request=extended_status_epp_frame() if self._ask_extended else None,
             )
         except (TimeoutError, OSError, RuntimeError) as err:
             raise UpdateFailed(f"uSS read from {self.host} failed: {err}") from err
+
+        telemetry: dict[str, Any] = {}
+        for blob in blobs:
+            if ext := parse_extended_status(blob):
+                telemetry = ext
+                break
 
         for blob in blobs:
             if state := parse_full_status(
@@ -241,10 +258,31 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.read_only_layout = (
                     len(blob) if state.get("writable") is False else None
                 )
+                if telemetry:
+                    self.supports_extended = True
+                    state.update(telemetry)
+                elif self._ask_extended and self.supports_extended is None:
+                    # Status arrived but no extended report: this unit does not offer one. Stop
+                    # asking rather than appending a frame it ignores on every poll from now on.
+                    self.supports_extended = False
+                    self._ask_extended = False
+                    _LOGGER.debug(
+                        "%s does not answer the extended-status query; the power and compressor "
+                        "sensors will stay unavailable for this unit", self.host,
+                    )
                 return state
 
         # Connected fine but nothing decoded — either the AC pushed no full report this
         # cycle (transient) or every biz payload failed the MD5 check (stale localKey).
+        # If we appended the extended query, retire it first so the next cycle retries with a plain
+        # read: a unit that cannot cope with the extra frame must not lose its status because of it.
+        if self._ask_extended:
+            self._ask_extended = False
+            self.supports_extended = False
+            _LOGGER.debug(
+                "no decodable status from %s while asking for extended status; dropping the extra "
+                "query and retrying with a plain read", self.host,
+            )
         self._log_undecodable(blobs)
         self._misses += 1
         # capture BEFORE the probe below resets it, or the message always reports 0

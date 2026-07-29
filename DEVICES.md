@@ -23,6 +23,34 @@ model missing from this table will very likely still work. The table records wha
 > (**compact-12**) or the classic packing at a different offset (**extended-36**), which the
 > integration recognises and decodes automatically.
 
+## What the Eco levels actually do
+
+On units with a multi-level Eco control (the remote shows **L1 / L2 / L3**), the levels are **current
+limits on the compressor**, not comfort tweaks — and a **higher number is more restrictive**, which is
+the opposite of what most people assume.
+
+Measured on an `HSU-24VRRA03TF` (23 200 BTU, 220 V) cooling a room from 28 °C with the setpoint held
+at 22 °C, so the unit was working hard and each level had something to cap:
+
+| Eco | Power | Current | Compressor |
+|---|---|---|---|
+| L1 | ≈ 1350 W | 6.0 A | 66 Hz |
+| L2 | ≈ 1130 W | 5.0 A | 55 Hz |
+| L3 | ≈ 800 W | 3.5 A | 40 Hz |
+| Off | ≥ 1350 W | ≥ 6.0 A | ≥ 66 Hz |
+
+So **L3 draws about 41 % less than L1** — and cools correspondingly more slowly. If a room is not
+getting cool enough, an Eco level is worth checking before anything else. The caps are round current
+values, which is a hint at the feature's origin: it is designed for running an air conditioner off a
+generator or a limited supply, and doubles as an energy saver.
+
+Two caveats on the numbers: they are one unit at one ambient, so treat the ratios rather than the
+absolute watts as the useful part; and the "Off" row is a lower bound, because the compressor was
+still ramping when it was measured.
+
+If your unit's Eco behaves differently, please say so in an issue — levels may well be scaled per
+model or per capacity.
+
 ## Known NOT to work
 
 These pair with the **hOn** app. Their Wi-Fi modules refuse the connection outright

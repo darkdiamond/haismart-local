@@ -261,6 +261,16 @@ EPP_FRAME_HEAD = b"\xff\xff"
 # EPP control commands (frameType=1 for all):
 EPP_CMD_GETALLPROPERTY = b"\x4d\x01"  # read-only status query — the SAFE probe (changes nothing)
 EPP_CMD_GRSETDAC = b"\x60\x01"        # group set (words 1-5)
+# Read-only query for the unit's EXTENDED status. Units that support it answer with an additional
+# report (see `parse_extended_status`) carrying the running power/current/compressor figures on top of
+# the ordinary status; units that don't simply refuse this one frame and still send normal status, so
+# asking is safe either way.
+EPP_CMD_EXTENDED_STATUS = b"\x4d\xfe"
+# Report kinds the unit sends back, identified by the command word inside the returned frame. A single
+# session can carry all three, so `parse_full_status` uses these to tell them apart.
+_EPP_RPT_STATUS = b"\x6d\x01"    # the ordinary full-status report
+_EPP_RPT_ALARM = b"\x0f\x5a"     # fault bitmap
+_EPP_RPT_EXTENDED = b"\x7d\x01"  # extended status (running power / compressor figures)
 
 
 def build_epp_frame(frame_type: int, epp_cmd: bytes, data: bytes = b"") -> bytes:
@@ -284,6 +294,17 @@ def getallproperty_epp_frame() -> bytes:
     """The read-only getAllProperty query frame ``ff ff 0a 00*6 01 4d 01 59`` — a status request that
     changes nothing. This is the frame the safe first probe sends."""
     return build_epp_frame(0x01, EPP_CMD_GETALLPROPERTY)
+
+
+def extended_status_epp_frame() -> bytes:
+    """The read-only extended-status query ``ff ff 0a 00*6 01 4d fe 56``.
+
+    Also changes nothing. Units that support it answer with an extra report carrying the live
+    power/current/compressor figures (:func:`parse_extended_status`) *in addition to* the ordinary
+    status report, so one request returns both. Units that don't support it answer this frame with a
+    short refusal and still send normal status — hence it is safe to ask unconditionally.
+    """
+    return build_epp_frame(0x01, EPP_CMD_EXTENDED_STATUS)
 
 
 # CONFIRMED inbound report-envelope prefix: bytes [0:78] of the decrypted status blob, byte-identical
@@ -507,7 +528,12 @@ _OFF_ATTRS = 92          # first packed attribute byte; identical on every known
 _OFF_TARGET_TEMP = 92    # targetTemperature = byte + 16
 _OFF_SWING_V = 93        # vertical: bit3(0x08)=auto up-down swing, bits0-2=vane position
 _OFF_MODE_FAN = 94       # (operationMode << 5) | windSpeed  — both STD codes packed in one byte
-_OFF_ONOFF = 97          # onOffStatus = byte (1=on/0=off)
+_OFF_ONOFF = 97          # onOffStatus lives in bit 0 of this byte ONLY — see _ONOFF_MASK
+# This byte carries EIGHT packed flags, not just the on/off bit: bit0 onOffStatus, bit1 health,
+# bit2 electric-heat, bit3 boost, bit4 quiet, bit5 sleep, bit6 child-lock, bit7 buzzer. Masking is
+# required — reading the whole byte reports the unit as ON whenever any of those toggles is set, and
+# this integration's own switches write four of them.
+_ONOFF_MASK = 0x01
 _OFF_INDOOR_TEMP = 104   # indoorTemperature = byte / 2  (the /2 == the model's 0.5° step)
 _OFF_OUTDOOR_TEMP = 106  # outdoorTemperature = byte - 64  (correlated across 3 states, 2 distinct pts)
 
@@ -647,11 +673,11 @@ def parse_full_status(
 
     All offsets validated on real hardware (getAttributeMap ground truth + a one-attribute-at-a-time
     app sweep):
-      - ``power``               = byte[97]
+      - ``power``               = byte[97] & 0x01   (bit 0 — the byte packs eight flags)
       - ``target_temperature``  = byte[92] + 16
       - ``current_temperature`` = byte[104] / 2
       - ``operation_mode`` (STD code) = byte[94] >> 5   (0=auto 1=cool 2=dry 6=fan)
-      - ``wind_speed``    (STD code) = byte[94] & 0x0F  (1=high 2=medium 3=low 5=auto)
+      - ``wind_speed``    (STD code) = byte[94] & 0x07  (1=high 2=medium 3=low 5=auto)
       - ``swing_vertical`` (bool)    = byte[93] & 0x08  (auto up-down swing; confirmed by app toggle)
       - ``swing_horizontal`` (bool)  = grSetDAC word4 bits 0-2 (auto left-right swing; app toggle)
       - ``outdoor_temperature``      = byte[106] - 64   (correlated across 3 states; 2 distinct points)
@@ -678,6 +704,15 @@ def parse_full_status(
     """
     if len(data) < 4 or data[2:4] != b"\x27\x15":
         return {}
+    # A session yields several report kinds, not just status: the fault bitmap and (when asked for)
+    # the extended report share the same container. Both are long enough to pass the length checks
+    # below and would decode into confident nonsense — e.g. the fault frame reads as a powered-off
+    # unit with a 16 C setpoint. Reject the report kinds we can identify rather than relying on the
+    # order the unit happens to send them in. Unrecognised kinds still fall through, so a family we
+    # have not seen is not locked out.
+    at = data.find(EPP_FRAME_HEAD)
+    if at >= 0 and data[at + 10:at + 12] in (_EPP_RPT_ALARM, _EPP_RPT_EXTENDED):
+        return {}
     # Non-classic families: the classic 125/127 lengths keep their hardware-verified inline decode
     # (and the write path) below; every other length consults the wire-model registry. A wire-model
     # decode that fails its own plausibility check returns None here, so we fall through to the
@@ -699,7 +734,7 @@ def parse_full_status(
     # specialMode into a phantom fan code of `speed + 8` and blanks the fan dropdown.
     fan_code = str(data[_OFF_MODE_FAN] & 0x07)
     out: dict = {
-        "power": bool(data[_OFF_ONOFF]),
+        "power": bool(data[_OFF_ONOFF] & _ONOFF_MASK),
         "target_temperature": float(data[_OFF_TARGET_TEMP] + 16),
         "operation_mode": mode_code,
         "wind_speed": fan_code,
@@ -746,6 +781,62 @@ def _sensor_temp(raw: int, *, scale: float, offset: float) -> float | None:
     return value if lo <= value <= hi else None
 
 
+# --- extended status (running power / compressor telemetry) -------------------
+
+# The extended report repeats the ordinary status words and then appends an engineering block. These
+# offsets are byte positions inside the decrypted blob, confirmed on a 24 000-BTU-class wall-mounted
+# split (the "classic" family, whose extended report is 141 bytes).
+_EXT_STATUS_LEN = 141
+_EXT_OFF_POWER = 126          # BE16, watts
+_EXT_OFF_COIL_DISCHARGE = 128  # high byte = indoor coil temp, low byte = compressor discharge temp
+_EXT_OFF_FREQ = 133           # compressor frequency, Hz
+_EXT_OFF_CURRENT = 134        # BE16, amps x 10
+_EXT_OFF_ACTUATORS = 136      # BE16 of 2-bit actuator states; bits 0-1 = compressor
+# A unit that is not reporting simply sends 0. Anything above these is not a real domestic reading and
+# is treated as "no data" rather than published into long-term statistics.
+_MAX_PLAUSIBLE_W = 20_000
+_MAX_PLAUSIBLE_A = 100.0
+
+
+def parse_extended_status(data: bytes) -> dict[str, Any]:
+    """Decode the running power / compressor figures from an extended-status report.
+
+    Returns ``{}`` for anything that is not the confirmed extended-report layout, so a device whose
+    extended report differs simply yields no telemetry rather than fabricated numbers. Only the
+    "classic" family's 141-byte report is confirmed; other families append their engineering block at
+    different offsets and need their own entry before this can decode them.
+
+    Keys (each omitted when the unit does not report it):
+      ``power_w``, ``compressor_current_a``, ``compressor_frequency_hz``,
+      ``coil_temperature``, ``discharge_temperature``, ``compressor_running``
+    """
+    if len(data) != _EXT_STATUS_LEN or data[2:4] != b"\x27\x15":
+        return {}
+    at = data.find(EPP_FRAME_HEAD)
+    if at < 0 or data[at + 10:at + 12] != _EPP_RPT_EXTENDED:
+        return {}
+
+    out: dict[str, Any] = {}
+    watts = int.from_bytes(data[_EXT_OFF_POWER:_EXT_OFF_POWER + 2], "big")
+    if watts <= _MAX_PLAUSIBLE_W:
+        out["power_w"] = watts
+    amps = int.from_bytes(data[_EXT_OFF_CURRENT:_EXT_OFF_CURRENT + 2], "big") / 10.0
+    if amps <= _MAX_PLAUSIBLE_A:
+        out["compressor_current_a"] = round(amps, 1)
+    out["compressor_frequency_hz"] = data[_EXT_OFF_FREQ]
+    # Same absent-sensor policy as the status report's temperatures: 0 must not become a confident
+    # -20/-64 C reading in a user's statistics.
+    coil = _sensor_temp(data[_EXT_OFF_COIL_DISCHARGE], scale=0.5, offset=-20.0)
+    if coil is not None:
+        out["coil_temperature"] = coil
+    discharge = _sensor_temp(data[_EXT_OFF_COIL_DISCHARGE + 1], scale=1.0, offset=-64.0)
+    if discharge is not None:
+        out["discharge_temperature"] = discharge
+    actuators = int.from_bytes(data[_EXT_OFF_ACTUATORS:_EXT_OFF_ACTUATORS + 2], "big")
+    out["compressor_running"] = bool(actuators & 0x03)
+    return out
+
+
 # --- live session (sync + async), READ-ONLY -----------------------------------
 
 def read_status(ip: str, device_id: str, local_key: str, *,
@@ -786,8 +877,16 @@ def read_status(ip: str, device_id: str, local_key: str, *,
 
 
 async def async_read_status(ip: str, device_id: str, local_key: str, *,
-                            pro_ver: int = 2, timeout: float = 4.0) -> list[bytes]:
-    """Async READ-ONLY handshake + status collect (for the HA coordinator)."""
+                            pro_ver: int = 2, timeout: float = 4.0,
+                            extra_request: bytes | None = None) -> list[bytes]:
+    """Async READ-ONLY handshake + status collect (for the HA coordinator).
+
+    ``extra_request`` optionally sends ONE additional read-only query inside the same session, after
+    the handshake completes, and collects its reply alongside the pushed status. This is how the
+    extended-status query (:func:`extended_status_epp_frame`) is polled: these units accept a single
+    connection at a time, so folding the extra query into the existing cycle costs no additional
+    connection and no additional poll. It is still a read — nothing is written to the device.
+    """
     reader, writer = await asyncio.wait_for(asyncio.open_connection(ip, USS_PORT), timeout)
     blobs: list[bytes] = []
     try:
@@ -805,6 +904,7 @@ async def async_read_status(ip: str, device_id: str, local_key: str, *,
         await writer.drain()
         buf = b""
         deadline = time.monotonic() + timeout
+        sent_extra = extra_request is None
         while len(buf) < 8192:
             # full timeout for the first bytes, then only a short idle window for stragglers - see
             # the note in `read_status`. The deadline stops a peer that trickles bytes from holding
@@ -820,6 +920,27 @@ async def async_read_status(ip: str, device_id: str, local_key: str, *,
             if not chunk:
                 break
             buf += chunk
+            if not sent_extra:
+                # The session is only live once the unit has sent HELLO_DONE_RESP; its body carries
+                # the sequence base this session's requests must use. Send the extra query exactly
+                # once, then keep collecting (and give the reply a fresh window to arrive).
+                for raw in split_messages(buf):
+                    msg = decode_message(raw)
+                    if msg.info_type != INFO_HELLO_DONE_RESP:
+                        continue
+                    try:
+                        _, seq_base = biz_decrypt(msg.payload, local_key)
+                    except ValueError:
+                        sent_extra = True   # stale key: the status decrypt will fail too, so give up
+                        break
+                    envelope = build_cae_op_request(extra_request, device_id, 1)
+                    writer.write(encode_message(
+                        0x64, 0, biz_encrypt(int.from_bytes(seq_base, "big"), envelope, local_key),
+                        type_byte=TYPE_BYTE[pro_ver], flag=FLAG_BIZ_ENCRYPTED, session=resp.session))
+                    await writer.drain()
+                    sent_extra = True
+                    deadline = time.monotonic() + timeout
+                    break
     finally:
         writer.close()
         try:
