@@ -77,12 +77,12 @@ PY
 # Report anything the regeneration threw away, so an edit made in the wrong place is caught here
 # rather than going quietly missing.
 if [ -n "${tmp:-}" ] && [ -d "$tmp/before" ]; then
-  if ! diff -rq "$tmp/before" "$DEST" >/dev/null 2>&1; then
+  if ! diff -rq -x __pycache__ -x "*.pyc" "$tmp/before" "$DEST" >/dev/null 2>&1; then
     echo
     echo "!!  This build DISCARDED local changes under custom_components/:"
     # `diff` exits 1 when files differ and the script runs under `set -e -o pipefail`, so without
     # this the build would abort here - before printing the advice that makes the warning useful.
-    diff -rq "$tmp/before" "$DEST" 2>&1 \
+    diff -rq -x __pycache__ -x "*.pyc" "$tmp/before" "$DEST" 2>&1 \
       | sed "s|$tmp/before|your edit|g; s|$DEST|regenerated|g; s|^|!!    |" || true
     echo "!!"
     echo "!!  custom_components/ is generated. Make the change in packages/ instead:"

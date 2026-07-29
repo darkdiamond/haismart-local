@@ -289,7 +289,8 @@ logger:
 
 ## Before you open an issue
 
-This is a reverse-engineered local protocol, so a good report is worth a great deal:
+This protocol is not publicly documented and behaviour varies between models, so a good report is
+worth a great deal:
 
 1. Check the [Logs page](https://my.home-assistant.io/redirect/logs/) for warnings from `haismart`.
 1. Enable debug logging (above) and reproduce the problem.
@@ -321,8 +322,9 @@ Protocol details, if you want to dig in: [`PROTOCOL.md`](PROTOCOL.md).
 
 ## Credits
 
-The local uSS/HRDP protocol here — the handshake, the AES/localKey biz-data layer, the status
-decode and the grSetDAC control path — was reverse-engineered from scratch for this project.
+The local uSS/HRDP protocol support here — the handshake, the AES/localKey biz-data layer, the status
+decode and the grSetDAC control path — was worked out from scratch for this project, for
+interoperability with air conditioners we own.
 
 Large parts of the multi-device support come from [**@darkdiamond**](https://github.com/darkdiamond),
 developed in a fork and merged back here with history intact: support for a second report layout
@@ -331,7 +333,7 @@ self-describe, the real product code, **heat mode confirmed on heat-capable hard
 horizontal-swing axis, the sign-in country picker and recovery flows, localisation, and this repo's
 CI. Thank you.
 
-Standing on the shoulders of prior Haier reverse-engineering:
+Standing on the shoulders of earlier independent work on Haier's local protocols:
 
 - [bstuff/haier-ac-remote](https://github.com/bstuff/haier-ac-remote) and
   [roeij/py-haier-ac-remote](https://github.com/roeij/py-haier-ac-remote) — early port-56800 work

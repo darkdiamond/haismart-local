@@ -17,6 +17,10 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 dest="$root/custom_components"
 [ -d "$dest" ] || { echo "no custom_components/ to check"; exit 0; }
 
+# Compiled bytecode is gitignored and is created just by running the tests, so it must not
+# count as drift - otherwise this fails for anyone who ran the suite first.
+DIFF_SKIP="-x __pycache__ -x *.pyc"
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 cp -r "$dest" "$tmp/actual"
@@ -30,14 +34,14 @@ cp -r "$dest" "$tmp/expected"
 rm -rf "$dest"
 cp -r "$tmp/actual" "$dest"
 
-if diff -rq "$tmp/actual" "$tmp/expected" >/dev/null 2>&1; then
+if diff -rq $DIFF_SKIP "$tmp/actual" "$tmp/expected" >/dev/null 2>&1; then
   echo "custom_components/ is in sync with packages/"
   exit 0
 fi
 
 {
   echo "custom_components/ is NOT in sync with packages/:"
-  diff -rq "$tmp/actual" "$tmp/expected" 2>&1 | sed "s|$tmp/actual|committed|; s|$tmp/expected|generated|; s/^/  /"
+  diff -rq $DIFF_SKIP "$tmp/actual" "$tmp/expected" 2>&1 | sed "s|$tmp/actual|committed|; s|$tmp/expected|generated|; s/^/  /"
   echo
   echo "Fix: run scripts/build-hacs.sh and commit the result."
   echo

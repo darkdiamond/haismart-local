@@ -9,6 +9,7 @@ from conftest import (
     heat_capable_digital_model,
     make_compact12_frame,
     make_extended36_frame,
+    make_extended_frame,
     make_status_frame,
 )
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
@@ -85,6 +86,57 @@ async def test_setup_creates_entities_from_status(hass: HomeAssistant, mock_uss)
     outdoor = hass.states.get("sensor.downstairs_ac_outdoor_temperature")
     assert indoor is not None and float(indoor.state) == 26.5
     assert outdoor is not None and float(outdoor.state) == 33.0
+
+
+async def test_extended_status_creates_power_sensors(hass: HomeAssistant, mock_uss) -> None:
+    """A unit that answers the extended query gets power / current / frequency entities.
+
+    Their names come from their device classes (Home Assistant translates those), so the entity ids
+    are the device-class slugs rather than anything this integration names.
+    """
+    mock_uss.read.return_value = [make_status_frame(), make_extended_frame()]
+    entry = await _setup(hass)
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.runtime_data.supports_extended is True
+
+    power = hass.states.get("sensor.downstairs_ac_power")
+    assert power is not None and float(power.state) == 910.0
+    assert power.attributes["device_class"] == "power"
+    assert power.attributes["unit_of_measurement"] == "W"
+    # MEASUREMENT is what puts it into long-term statistics, which the energy helper builds on
+    assert power.attributes["state_class"] == "measurement"
+
+    current = hass.states.get("sensor.downstairs_ac_current")
+    assert current is not None and float(current.state) == 4.0
+    frequency = hass.states.get("sensor.downstairs_ac_frequency")
+    assert frequency is not None and float(frequency.state) == 43.0
+
+    # the ordinary status fields still decode from the same cycle
+    assert hass.states.get(CLIMATE).state == "cool"
+
+
+async def test_unit_without_extended_status_stops_asking(
+    hass: HomeAssistant, mock_uss, freezer
+) -> None:
+    """A unit that ignores the extended query keeps working, and we stop appending the frame.
+
+    The sensors are still created (so they appear if a firmware update ever answers) but report
+    unknown rather than a made-up zero.
+    """
+    mock_uss.read.return_value = [make_status_frame()]        # status only, no extended report
+    entry = await _setup(hass)
+    assert entry.state is ConfigEntryState.LOADED
+    coordinator = entry.runtime_data
+    assert coordinator.supports_extended is False
+
+    power = hass.states.get("sensor.downstairs_ac_power")
+    assert power is not None and power.state == "unknown"
+
+    # and the next poll must not ask again
+    mock_uss.read.reset_mock()
+    await _tick(hass, freezer)
+    for call in mock_uss.read.await_args_list:
+        assert call.kwargs.get("extra_request") is None
 
 
 async def test_powered_off_reports_hvac_off(hass: HomeAssistant, mock_uss) -> None:

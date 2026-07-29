@@ -3,8 +3,9 @@
 Reference notes for the LAN protocol these air conditioners speak on **TCP port 56800**. Useful if
 you are adding a model, debugging a decode, or driving a unit without Home Assistant.
 
-The protocol itself was reverse-engineered by [@enapt](https://github.com/enapt); this document
-mostly records what the code already encodes, plus what has been learned since.
+This protocol is not publicly documented; the description here was worked out independently by
+[@enapt](https://github.com/enapt) for interoperability with hardware we own. The document mostly
+records what the code already encodes, plus what has been learned since.
 
 ## Layers
 

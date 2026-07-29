@@ -41,6 +41,36 @@ def make_status_frame(
     return bytes(frame)
 
 
+def make_extended_frame(
+    *,
+    power_w: int = 910,
+    current_a: float = 4.0,
+    frequency_hz: int = 43,
+    coil_temp: float = 12.0,
+    discharge_temp: int = 58,
+    compressor: bool = True,
+) -> bytes:
+    """Build a synthetic 141-byte extended-status report (offsets per uss.parse_extended_status).
+
+    The command word inside the frame is what marks it as extended rather than status, so it has to
+    be present: the parser identifies report kinds by command, not by length.
+    """
+    frame = bytearray(141)
+    frame[2:4] = b"\x27\x15"
+    at = 80
+    frame[at:at + 2] = b"\xff\xff"
+    frame[at + 2] = 0x3A                      # inner length
+    frame[at + 9] = 0x06                      # report
+    frame[at + 10:at + 12] = b"\x7d\x01"      # extended-status report command
+    frame[126:128] = power_w.to_bytes(2, "big")
+    frame[128] = int((coil_temp + 20.0) / 0.5)
+    frame[129] = discharge_temp + 64
+    frame[133] = frequency_hz
+    frame[134:136] = int(round(current_a * 10)).to_bytes(2, "big")
+    frame[136:138] = (0x0001 if compressor else 0x0000).to_bytes(2, "big")
+    return bytes(frame)
+
+
 def make_compact12_frame(
     *,
     power: bool = True,
