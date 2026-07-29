@@ -1,9 +1,9 @@
 """Select entity for the AC's multi-level ECO control.
 
-This unit's ECO is a 3-bit field (word4 b3-5) with values {0=off, 5, 6, 7} — confirmed for this
-unit. It is NOT the digital model's energySavingStatus bool. The library refuses any
-code outside {0,5,6,7}. NB the level<->code ordering (which of 5/6/7 the app shows as level 1/2/3)
-is a display label still to be confirmed; the codes themselves are all real device states.
+This unit's ECO is a 3-bit field (word4 b3-5) with values {0=off, 5, 6, 7} = off / L1 / L2 / L3,
+matching the remote's "ECO L1/L2/L3". It is NOT the digital model's energySavingStatus bool. The
+library refuses any code outside {0,5,6,7}. The levels are a compressor current limit — a higher
+level caps harder, so the unit draws less and cools more slowly (confirmed by measurement).
 """
 from __future__ import annotations
 

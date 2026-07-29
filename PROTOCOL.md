@@ -105,7 +105,7 @@ independent of where that block sits in the op.
 > families are data-driven wire models — two paradigms for the same idea. The plan, once the wire-model
 > path has more confirmed models behind it, is to fold the classic family into the registry as one more
 > entry (extending `WireModel` to cover its byte-offset sensors, variable 125/127 length, and
-> device-specific values such as the swing toggle and repurposed eco field), collapsing to a single
+> device-specific values such as the swing toggle and the eco level), collapsing to a single
 > path. A smaller first step is to extract the shared bit pack/unpack helpers the two paths currently
 > duplicate. Both are deliberately deferred so the hardware-verified classic path stays untouched until
 > then.
@@ -196,16 +196,20 @@ pushes on the op's own connection, so the baseline is always live.
 | `silentSleepStatus` | 3 | 5 | 1 |
 | `screenDisplayStatus` | 3 | 9 | 1 |
 | `windDirectionHorizontal` | 4 | 0 | 3 |
-| `ecoMode` (unconfirmed) | 4 | 3 | 3 |
+| `ecoMode` | 4 | 3 | 3 |
 
 STD operation-mode codes are drawn from a Haier-wide space, not allocated per model — the tell is the
 gaps: a cooling-only unit lists 0/1/2 then jumps to 6, skipping 3/4/5. Known codes: `0` auto, `1`
 cool, `2` dry, `4` heat, `6` fan-only. Wind speed: `1` high, `2` medium, `3` low, `5` auto.
 
-**`ecoMode` is not confirmed.** There is no `ecoMode` attribute in the digital model, and word 4
-bits 3–5 most likely belong to `generatorMode` (`dataList 0..3`) with one adjacent bit owned by
-something else. It is restricted to the one model where the behaviour was observed, and should not be
-extended without a fresh single-attribute sweep.
+**`ecoMode` — confirmed on this model.** Word 4 bits 3–5 are a 3-bit eco/power-limit level with
+values `0` off, `5`/`6`/`7` = levels 1/2/3 (the remote labels these **ECO L1/L2/L3**). The encoding
+is an enable bit (bit 5) plus a 2-bit level (bits 3–4). It corresponds to the digital model's
+`generatorMode`, and it acts as a **compressor current limit** — a higher level caps harder, so the
+unit draws less and cools more slowly. This was confirmed live by stepping through the levels and
+watching the power and compressor-current readings; see [DEVICES.md](DEVICES.md) for the measured
+figures. The codes are confirmed for **this family only** — another model may map the levels
+differently, so don't widen the allowlist for a new model without a fresh single-attribute sweep.
 
 ## Cross-attribute rules
 

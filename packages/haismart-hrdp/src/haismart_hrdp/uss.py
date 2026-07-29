@@ -438,7 +438,7 @@ GRSETDAC_ENUMS = {  # semantic token -> raw EPP value, for the multi-value field
     "windSpeed":     {"high": 1, "medium": 2, "low": 3, "auto": 5},
     "windDirectionVertical": {"off": 0x00, "on": 0x0c},
     "windDirectionHorizontal": {"off": 0x00, "on": 0x07},
-    "ecoMode":               {"off": 0, "level1": 5, "level2": 6, "level3": 7},  # level<->code order TBD
+    "ecoMode":               {"off": 0, "level1": 5, "level2": 6, "level3": 7},  # confirmed: higher level caps harder
 }
 
 
