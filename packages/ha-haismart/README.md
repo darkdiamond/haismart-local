@@ -41,13 +41,16 @@ write path. No cloud at runtime.
   - `switch` ×5 — **strong** (rapid), **quiet** (mute), **health**, **sleep**, **lamp** (front display).
   - `select` — **eco** (off / level 1 / level 2 / level 3).
   - `sensor` ×2 — indoor + outdoor temperature.
+  - `sensor` — **Model ID** (diagnostic): the `uPlusId` that selects the report layout. Its own entity
+    rather than an attribute of the localKey sensor, because it is a model identifier and not a secret —
+    reading it should not require enabling an entity whose state is your key.
   - `binary_sensor` — **Cloud connection**: whether the AC itself can still reach Haier, asked over a
     key-free local query (UDP `:7083`) that never contacts Haier. Verifies a firewall block; reads
     *unknown*, never a fabricated "disconnected", on a unit that doesn't answer it.
   - `sensor` — **Local key** (backup/export): the AC's current localKey, **diagnostic + disabled by
     default** (it's a secret). Enable it to see/copy the key — it then rides along in HA backups, and its
     attributes carry everything the **manual** onboarding path needs (host + deviceId + version +
-    `uPlusId`), so you stay Haier-independent even if the account/cloud ever disappears. Stays current
+    `uPlusId`, also its own **Model ID** sensor), so you stay Haier-independent even if the account/cloud ever disappears. Stays current
     across key rotation.
 - **Finds a unit that moved**: these modules change address on DHCP, which otherwise looks exactly like
   an AC that died. After a failed read the coordinator looks the unit up by its deviceId (= MAC) via

@@ -157,20 +157,23 @@
   },
   "entity": {
     "sensor": {
-      "indoor_temperature": {
-        "name": "室内温度"
-      },
-      "outdoor_temperature": {
-        "name": "室外温度"
-      },
-      "local_key": {
-        "name": "本地密钥"
-      },
       "coil_temperature": {
         "name": "Coil temperature"
       },
       "discharge_temperature": {
         "name": "Discharge temperature"
+      },
+      "indoor_temperature": {
+        "name": "室内温度"
+      },
+      "local_key": {
+        "name": "本地密钥"
+      },
+      "outdoor_temperature": {
+        "name": "室外温度"
+      },
+      "uplus_id": {
+        "name": "型号 ID"
       }
     },
     "switch": {

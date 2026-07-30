@@ -157,20 +157,23 @@
   },
   "entity": {
     "sensor": {
-      "indoor_temperature": {
-        "name": "Температура на закрито"
-      },
-      "outdoor_temperature": {
-        "name": "Външна температура"
-      },
-      "local_key": {
-        "name": "Локален ключ"
-      },
       "coil_temperature": {
         "name": "Coil temperature"
       },
       "discharge_temperature": {
         "name": "Discharge temperature"
+      },
+      "indoor_temperature": {
+        "name": "Температура на закрито"
+      },
+      "local_key": {
+        "name": "Локален ключ"
+      },
+      "outdoor_temperature": {
+        "name": "Външна температура"
+      },
+      "uplus_id": {
+        "name": "Идентификатор на модела"
       }
     },
     "switch": {

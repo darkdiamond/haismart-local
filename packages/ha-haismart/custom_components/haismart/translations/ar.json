@@ -157,20 +157,23 @@
   },
   "entity": {
     "sensor": {
-      "indoor_temperature": {
-        "name": "درجة الحرارة الداخلية"
-      },
-      "outdoor_temperature": {
-        "name": "درجة الحرارة الخارجية"
-      },
-      "local_key": {
-        "name": "المفتاح المحلي"
-      },
       "coil_temperature": {
         "name": "Coil temperature"
       },
       "discharge_temperature": {
         "name": "Discharge temperature"
+      },
+      "indoor_temperature": {
+        "name": "درجة الحرارة الداخلية"
+      },
+      "local_key": {
+        "name": "المفتاح المحلي"
+      },
+      "outdoor_temperature": {
+        "name": "درجة الحرارة الخارجية"
+      },
+      "uplus_id": {
+        "name": "معرّف الطراز"
       }
     },
     "switch": {

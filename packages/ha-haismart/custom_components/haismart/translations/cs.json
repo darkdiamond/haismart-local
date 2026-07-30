@@ -157,20 +157,23 @@
   },
   "entity": {
     "sensor": {
-      "indoor_temperature": {
-        "name": "Vnitřní teplota"
-      },
-      "outdoor_temperature": {
-        "name": "Venkovní teplota"
-      },
-      "local_key": {
-        "name": "Lokální klíč"
-      },
       "coil_temperature": {
         "name": "Coil temperature"
       },
       "discharge_temperature": {
         "name": "Discharge temperature"
+      },
+      "indoor_temperature": {
+        "name": "Vnitřní teplota"
+      },
+      "local_key": {
+        "name": "Lokální klíč"
+      },
+      "outdoor_temperature": {
+        "name": "Venkovní teplota"
+      },
+      "uplus_id": {
+        "name": "ID modelu"
       }
     },
     "switch": {

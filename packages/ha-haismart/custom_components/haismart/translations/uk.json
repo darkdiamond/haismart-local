@@ -157,20 +157,23 @@
   },
   "entity": {
     "sensor": {
-      "indoor_temperature": {
-        "name": "Температура в приміщенні"
-      },
-      "outdoor_temperature": {
-        "name": "Температура надворі"
-      },
-      "local_key": {
-        "name": "Локальний ключ"
-      },
       "coil_temperature": {
         "name": "Coil temperature"
       },
       "discharge_temperature": {
         "name": "Discharge temperature"
+      },
+      "indoor_temperature": {
+        "name": "Температура в приміщенні"
+      },
+      "local_key": {
+        "name": "Локальний ключ"
+      },
+      "outdoor_temperature": {
+        "name": "Температура надворі"
+      },
+      "uplus_id": {
+        "name": "Ідентифікатор моделі"
       }
     },
     "switch": {

@@ -157,20 +157,23 @@
   },
   "entity": {
     "sensor": {
-      "indoor_temperature": {
-        "name": "Nhiệt độ trong nhà"
-      },
-      "outdoor_temperature": {
-        "name": "Nhiệt độ ngoài trời"
-      },
-      "local_key": {
-        "name": "Khóa cục bộ"
-      },
       "coil_temperature": {
         "name": "Coil temperature"
       },
       "discharge_temperature": {
         "name": "Discharge temperature"
+      },
+      "indoor_temperature": {
+        "name": "Nhiệt độ trong nhà"
+      },
+      "local_key": {
+        "name": "Khóa cục bộ"
+      },
+      "outdoor_temperature": {
+        "name": "Nhiệt độ ngoài trời"
+      },
+      "uplus_id": {
+        "name": "Mã model"
       }
     },
     "switch": {

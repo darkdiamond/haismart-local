@@ -157,20 +157,23 @@
   },
   "entity": {
     "sensor": {
-      "indoor_temperature": {
-        "name": "Beltéri hőmérséklet"
-      },
-      "outdoor_temperature": {
-        "name": "Kültéri hőmérséklet"
-      },
-      "local_key": {
-        "name": "Helyi kulcs"
-      },
       "coil_temperature": {
         "name": "Coil temperature"
       },
       "discharge_temperature": {
         "name": "Discharge temperature"
+      },
+      "indoor_temperature": {
+        "name": "Beltéri hőmérséklet"
+      },
+      "local_key": {
+        "name": "Helyi kulcs"
+      },
+      "outdoor_temperature": {
+        "name": "Kültéri hőmérséklet"
+      },
+      "uplus_id": {
+        "name": "Modellazonosító"
       }
     },
     "switch": {

@@ -157,20 +157,23 @@
   },
   "entity": {
     "sensor": {
-      "indoor_temperature": {
-        "name": "Suhu dalam ruangan"
-      },
-      "outdoor_temperature": {
-        "name": "Suhu luar ruangan"
-      },
-      "local_key": {
-        "name": "Kunci lokal"
-      },
       "coil_temperature": {
         "name": "Coil temperature"
       },
       "discharge_temperature": {
         "name": "Discharge temperature"
+      },
+      "indoor_temperature": {
+        "name": "Suhu dalam ruangan"
+      },
+      "local_key": {
+        "name": "Kunci lokal"
+      },
+      "outdoor_temperature": {
+        "name": "Suhu luar ruangan"
+      },
+      "uplus_id": {
+        "name": "ID model"
       }
     },
     "switch": {

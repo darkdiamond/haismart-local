@@ -157,20 +157,23 @@
   },
   "entity": {
     "sensor": {
-      "indoor_temperature": {
-        "name": "อุณหภูมิภายในห้อง"
-      },
-      "outdoor_temperature": {
-        "name": "อุณหภูมิภายนอก"
-      },
-      "local_key": {
-        "name": "คีย์ภายใน"
-      },
       "coil_temperature": {
         "name": "Coil temperature"
       },
       "discharge_temperature": {
         "name": "Discharge temperature"
+      },
+      "indoor_temperature": {
+        "name": "อุณหภูมิภายในห้อง"
+      },
+      "local_key": {
+        "name": "คีย์ภายใน"
+      },
+      "outdoor_temperature": {
+        "name": "อุณหภูมิภายนอก"
+      },
+      "uplus_id": {
+        "name": "รหัสรุ่น"
       }
     },
     "switch": {
