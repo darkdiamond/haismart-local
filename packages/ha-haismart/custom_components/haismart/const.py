@@ -62,6 +62,12 @@ UDISCOVERY_MISSES = 3        # consecutive silent queries (while reachable) befo
 # from a dead one until you go looking for it. Cooled down so a genuinely offline AC (powered off,
 # off the network) doesn't trigger a network sweep on every poll.
 REDISCOVER_COOLDOWN = 300.0  # seconds between attempts
+# The extended report (running power / compressor figures) only arrives in a READ cycle, so a cycle
+# that does not carry one — every control op, plus the occasional dropped reply — would otherwise
+# blank all of that telemetry. The last reading stands in for up to this long instead; these are
+# slow-moving measurements, so a value from seconds ago beats a gap, while a unit that has genuinely
+# stopped reporting still ends up honestly unknown rather than frozen on an old number.
+TELEMETRY_MAX_AGE = 120.0    # seconds a previous extended reading may stand in for a missing one
 
 CONF_SCAN_INTERVAL = "scan_interval"
 DEFAULT_SCAN_INTERVAL = 30  # seconds between read cycles (each is handshake+collect+close)

@@ -81,6 +81,7 @@ from .const import (
     ISSUE_UNKNOWN_LAYOUT,
     READ_TIMEOUT,
     REDISCOVER_COOLDOWN,
+    TELEMETRY_MAX_AGE,
     UDISCOVERY_INTERVAL,
     UDISCOVERY_MISSES,
     UDISCOVERY_TIMEOUT,
@@ -165,6 +166,15 @@ def _model_authorized_codes(model: dict[str, Any] | None) -> dict[str, set[int]]
     return {name: values for name, values in codes.items() if values}
 
 
+def _telemetry_from(blobs: list[bytes]) -> dict[str, Any]:
+    """The running-power/compressor figures out of a session's blobs, or ``{}`` if it carried no
+    extended report (the usual case for a control session, which does not query for one)."""
+    for blob in blobs:
+        if ext := parse_extended_status(blob):
+            return ext
+    return {}
+
+
 def _build_profile(
     entry: HaismartConfigEntry, product_code: str, model: dict[str, Any] | None
 ) -> AttributeProfile:
@@ -202,6 +212,12 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # None = not yet known; settled on the first cycle that produces a status report.
         self.supports_extended: bool | None = None
         self._ask_extended = True
+        # The last extended reading actually reported, with when it arrived and the on/off state it
+        # described. A cycle that carries no extended report re-publishes it (see
+        # `_apply_telemetry`) so a control op does not blank the telemetry entities.
+        self._telemetry: dict[str, Any] = {}
+        self._telemetry_at = 0.0
+        self._telemetry_power: bool | None = None
         self._misses = 0
         # Cloud reachability, from the key-free UDISCOVERY query (see const.py). `None` = not known
         # (never answered, or the unit does not implement it) -- deliberately NOT False, so a device
@@ -267,11 +283,7 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # sits here rather than at the top of the cycle.
         await self._async_poll_cloud_state()
 
-        telemetry: dict[str, Any] = {}
-        for blob in blobs:
-            if ext := parse_extended_status(blob):
-                telemetry = ext
-                break
+        telemetry = _telemetry_from(blobs)
 
         for blob in blobs:
             if state := parse_full_status(
@@ -298,7 +310,6 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 if telemetry:
                     self.supports_extended = True
-                    state.update(telemetry)
                 elif self._ask_extended and self.supports_extended is None:
                     # Status arrived but no extended report: this unit does not offer one. Stop
                     # asking rather than appending a frame it ignores on every poll from now on.
@@ -308,6 +319,7 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "%s does not answer the extended-status query; the power and compressor "
                         "sensors will stay unavailable for this unit", self.host,
                     )
+                self._apply_telemetry(state, telemetry)
                 return state
 
         # Connected fine but nothing decoded — either the AC pushed no full report this
@@ -631,14 +643,49 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """The newest decodable full-status report in a control op's reply blobs, or None if none
         decoded. The AC echoes updated state on the op connection (the protocol). Also updates
         the seed baseline + miss counter so the next op/poll starts from the confirmed state."""
+        telemetry = _telemetry_from(reply)
         for blob in reversed(reply):
             if state := parse_full_status(
                 blob, self.profile, self.digital_model, uplus_id=self.uplus_id
             ):
                 self.last_raw_status = blob
                 self._misses = 0
+                self._apply_telemetry(state, telemetry)
                 return state
         return None
+
+    def _apply_telemetry(self, state: dict[str, Any], telemetry: dict[str, Any]) -> None:
+        """Attach the running-power/compressor figures to a decoded state, standing in the previous
+        reading when this cycle produced none.
+
+        A control session collects the AC's own status echo but no extended report — that query
+        belongs to a read cycle — so publishing the echo alone used to blank every telemetry entity:
+        power, current, frequency, the coil/discharge temperatures and the compressor/fan sensors
+        all went `unknown` after each command until the next poll (which a command also pushes a
+        full interval away). The same gap opens on a read cycle whose extended reply simply does not
+        arrive. These are slow-moving measurements, so the reading from moments ago stands in far
+        better than a hole in the history, for up to `TELEMETRY_MAX_AGE`.
+
+        It is dropped at once when the unit's on/off state changed, because that invalidates the
+        figures outright — an AC that was drawing 800 W draws none once it is off — and a
+        plausible-looking wrong number is worse than a gap.
+        """
+        if telemetry:
+            state.update(telemetry)
+            self._telemetry = telemetry
+            self._telemetry_at = self.hass.loop.time()
+            self._telemetry_power = state.get("power")
+            return
+        if not self._telemetry or self.supports_extended is not True:
+            return
+        if state.get("power") != self._telemetry_power:
+            return
+        if self.hass.loop.time() - self._telemetry_at > TELEMETRY_MAX_AGE:
+            # Too old to speak for the unit any more: forget it, so the entities read unknown
+            # instead of holding a stale number indefinitely.
+            self._telemetry = {}
+            return
+        state.update(self._telemetry)
 
     def _validate_against_model(self, changes: dict[str, int]) -> None:
         """Reject a control change the device's digital model forbids (out-of-range temperature, an

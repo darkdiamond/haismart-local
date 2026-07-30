@@ -135,6 +135,13 @@ The **Cloud connection** sensor is refreshed on its own slower cadence (about on
 the same cycle. It costs one small UDP exchange rather than a connection, and the underlying state
 only moves on a scale of minutes, so there is nothing to gain from asking more often.
 
+When you change a setting, the air conditioner confirms it on that same connection, so the thermostat
+card reflects the change at once instead of waiting for the next poll. The engineering readings —
+power, current, frequency, the coil and discharge temperatures, compressor and fan — are not part of
+that confirmation, so they keep the values from the most recent poll until the next one arrives. They
+are held for at most two minutes, and cleared immediately if you switch the unit on or off, because
+the figures for a running unit say nothing about one that has just stopped.
+
 ## Before you install
 
 Worth knowing up front, so nothing surprises you:

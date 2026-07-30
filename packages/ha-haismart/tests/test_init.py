@@ -31,6 +31,7 @@ from custom_components.haismart.const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     REDISCOVER_COOLDOWN,
+    TELEMETRY_MAX_AGE,
     UDISCOVERY_INTERVAL,
     UDISCOVERY_MISSES,
 )
@@ -451,6 +452,69 @@ async def test_control_falls_back_to_read_when_reply_has_no_status(
     assert hass.states.get(CLIMATE).attributes["temperature"] == 26.0
     # one read: the post-op fallback confirmation cycle (the baseline came from the op's own push)
     assert mock_uss.read.await_count == reads_after_setup + 1
+
+
+async def test_control_keeps_the_telemetry_readings(hass: HomeAssistant, mock_uss) -> None:
+    """A command must not blank the power/compressor entities.
+
+    The op connection carries the AC's status echo but no extended report (that query belongs to a
+    read cycle), so confirming from the echo alone left every telemetry entity `unknown` until the
+    next poll — which the command itself had just pushed a full interval away. The last reading
+    stands in instead.
+    """
+    mock_uss.read.return_value = [make_status_frame(), make_extended_frame()]
+    await _setup(hass)
+    assert float(hass.states.get("sensor.downstairs_ac_power").state) == 910.0
+
+    mock_uss.send.return_value = [make_status_frame(target_temp=26)]   # status echo, no telemetry
+    await hass.services.async_call(
+        "climate", "set_temperature", {"entity_id": CLIMATE, "temperature": 26}, blocking=True
+    )
+    await hass.async_block_till_done()
+
+    assert hass.states.get(CLIMATE).attributes["temperature"] == 26.0   # the command took effect
+    assert float(hass.states.get("sensor.downstairs_ac_power").state) == 910.0
+    assert float(hass.states.get("sensor.downstairs_ac_current").state) == 4.0
+    assert float(hass.states.get("sensor.downstairs_ac_frequency").state) == 43.0
+    assert float(hass.states.get("sensor.downstairs_ac_coil_temperature").state) == 12.0
+    assert hass.states.get("binary_sensor.downstairs_ac_compressor").state == "on"
+
+
+async def test_switching_off_drops_the_stale_telemetry(hass: HomeAssistant, mock_uss) -> None:
+    """Holding the previous reading stops at an on/off change: an AC that was drawing 910 W draws
+    nothing once it is off, so the figures are dropped rather than held as a plausible lie."""
+    mock_uss.read.return_value = [make_status_frame(), make_extended_frame()]
+    await _setup(hass)
+    assert float(hass.states.get("sensor.downstairs_ac_power").state) == 910.0
+
+    mock_uss.send.return_value = [make_status_frame(power=False)]
+    await hass.services.async_call(
+        "climate", "turn_off", {"entity_id": CLIMATE}, blocking=True
+    )
+    await hass.async_block_till_done()
+
+    assert hass.states.get(CLIMATE).state == "off"
+    assert hass.states.get("sensor.downstairs_ac_power").state == "unknown"
+    assert hass.states.get("binary_sensor.downstairs_ac_compressor").state == "unknown"
+
+
+async def test_telemetry_survives_a_dropped_reply_then_expires(
+    hass: HomeAssistant, mock_uss, freezer
+) -> None:
+    """A read cycle whose extended reply does not arrive keeps the last reading too — but only for
+    TELEMETRY_MAX_AGE, so a unit that has actually stopped reporting reads unknown rather than
+    staying frozen on an old number."""
+    mock_uss.read.return_value = [make_status_frame(), make_extended_frame()]
+    await _setup(hass)
+
+    mock_uss.read.return_value = [make_status_frame()]      # extended reply missing from now on
+    await _tick(hass, freezer)
+    assert float(hass.states.get("sensor.downstairs_ac_power").state) == 910.0
+
+    freezer.tick(timedelta(seconds=TELEMETRY_MAX_AGE))
+    await _tick(hass, freezer)
+    assert hass.states.get("sensor.downstairs_ac_power").state == "unknown"
+    assert hass.states.get(CLIMATE).state == "cool"        # the status itself still decodes
 
 
 async def test_setup_retries_when_unreachable(hass: HomeAssistant, mock_uss) -> None:
