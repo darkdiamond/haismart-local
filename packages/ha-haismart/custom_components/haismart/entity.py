@@ -36,5 +36,8 @@ class HaismartEntity(CoordinatorEntity[HaismartCoordinator]):
             model=entry_data.get(CONF_MODEL_NAME) or coordinator.product_code,
             model_id=coordinator.product_code,
             name=coordinator.config_entry.title,
+            # Reported by the AC over the key-free UDISCOVERY query; absent on units that don't
+            # answer it, in which case HA simply shows no firmware version.
+            sw_version=coordinator.firmware,
             configuration_url=f"http://{coordinator.host}",
         )

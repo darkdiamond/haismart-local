@@ -30,7 +30,7 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import CONF_HOST, CONF_LOCALKEY_VERSION, CONF_PRODUCT_CODE
+from .const import CONF_HOST, CONF_LOCALKEY_VERSION, CONF_PRODUCT_CODE, CONF_UPLUS_ID
 from .coordinator import HaismartConfigEntry, HaismartCoordinator
 from .entity import HaismartEntity
 
@@ -155,7 +155,8 @@ class HaismartLocalKeySensor(HaismartEntity, SensorEntity):
     """The AC's current localKey, for backup/export. Diagnostic + disabled by default (a secret).
 
     Enable it to see/copy the key (it rides along in HA backups); the attributes carry all the
-    `manual` onboarding path needs (host + deviceId + version), a one-stop cloud-independent backup.
+    `manual` onboarding path needs (host + deviceId + version + uPlusId), a one-stop
+    cloud-independent backup.
     Stays current across localKey rotation (the coordinator updates it in place)."""
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
@@ -179,4 +180,7 @@ class HaismartLocalKeySensor(HaismartEntity, SensorEntity):
             "device_id": c.device_id,
             CONF_LOCALKEY_VERSION: c.localkey_version,
             CONF_PRODUCT_CODE: c.product_code,
+            # The wire-model key. Worth backing up alongside the localKey: with both, a manual
+            # re-add decodes the AC exactly as a cloud-onboarded one would, with no account.
+            CONF_UPLUS_ID: c.uplus_id,
         }

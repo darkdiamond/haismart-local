@@ -66,6 +66,25 @@ async def async_get_config_entry_diagnostics(
             "uplus_id": coordinator.uplus_id,
             "layout": _layout_summary(coordinator),
         },
+        # Whether the AC itself can reach Haier's cloud (key-free UDISCOVERY query). Worth having
+        # in a bug report: a unit that is cut off cannot be re-keyed, which explains a stale
+        # localKey failure that would otherwise look like a protocol bug.
+        "cloud": {
+            "connected": coordinator.cloud_connected,
+            "raw_state": coordinator.cloud_state,
+            "supported": coordinator.supports_udiscovery,
+            # Where the AC says it is, and whether that still agrees with the address this entry
+            # uses. `host_matches: false` means the unit moved on DHCP and the entry is stale --
+            # worth stating outright, because it presents as "the AC stopped responding" and is
+            # otherwise indistinguishable from a dead unit or a bad key.
+            "reported_host": coordinator.reported_host,
+            "reported_port": coordinator.reported_port,
+            "host_matches": (
+                None
+                if coordinator.reported_host is None
+                else coordinator.reported_host == coordinator.host
+            ),
+        },
         "digital_model": _model_summary(coordinator.digital_model),
         "profile": {
             "product_code": coordinator.product_code,

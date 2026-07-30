@@ -82,6 +82,7 @@ from .const import (
     READ_TIMEOUT,
 )
 from .countries import country_options, default_dial_code
+from .discovery import async_resolve_host_arp
 
 
 class CannotConnect(HomeAssistantError):
@@ -201,7 +202,7 @@ async def _async_resolve_host(hass, device_id: str, timeout: float = 1.5) -> str
     mDNS is still tried first (cheap, harmless; a future unit/firmware may announce). Returns the IP
     or ``None`` -> the flow then asks for the host."""
     ip = await _async_resolve_host_mdns(hass, device_id, timeout)
-    return ip or await _async_resolve_host_arp(device_id)
+    return ip or await async_resolve_host_arp(device_id)
 
 
 async def _async_resolve_host_mdns(hass, device_id: str, timeout: float) -> str | None:
@@ -216,21 +217,6 @@ async def _async_resolve_host_mdns(hass, device_id: str, timeout: float) -> str 
                 return addr
     except Exception:  # noqa: BLE001 - best-effort convenience, never fatal
         return None
-    return None
-
-
-async def _async_resolve_host_arp(device_id: str) -> str | None:
-    """Map the deviceId (= MAC) to a LAN IP via aiodiscover's ARP scan (HA's DHCP mechanism)."""
-    target = device_id.replace(":", "").lower()
-    try:
-        from aiodiscover import DiscoverHosts
-
-        hosts = await DiscoverHosts().async_discover()
-    except Exception:  # noqa: BLE001 - best-effort; aiodiscover ships with the dhcp component
-        return None
-    for host in hosts:
-        if str(host.get("macaddress", "")).replace(":", "").lower() == target:
-            return host.get("ip")
     return None
 
 

@@ -11,6 +11,9 @@ SE-Asia ACs). No Home Assistant coupling, no cloud.
 - **Control:** the `grSetDAC` group-set write path (`grsetdac_baseline_from_status` →
   `set_grsetdac_field` → `async_send_op`). The encoder only emits fields/values in its allowlist.
 - Per-model semantics via `AttributeProfile`, built from the device digital model (`profiles.py`).
+- **Discovery + cloud reachability** on UDP `:7083` (`udiscovery.py`): a key-free query that returns a
+  unit's deviceId, `uPlusId`, address, firmware — and whether it can currently reach Haier's cloud.
+  Needs no localKey and no account.
 
 ## Example (read)
 
@@ -19,6 +22,19 @@ import haismart_hrdp as h
 blobs = h.read_status("192.168.1.50", "ACB722AABBCC", "<localKey>")
 blob = next(b for b in blobs if h.derive_status_layout(b) is not None)
 print(h.parse_full_status(blob, h.profile_for("AAC1UKZ01")))
+```
+
+## Example (discovery — no key needed)
+
+```python
+from haismart_hrdp import udiscovery
+
+info = udiscovery.query("192.168.1.50")
+print(info.device_id, info.uplus_id, info.firmware, info.cloud_connected)
+
+# whole-LAN sweep (binds :7083, which the protocol requires for broadcast)
+for dev in udiscovery.discover():
+    print(dev.device_id, dev.host)
 ```
 
 ## Tests

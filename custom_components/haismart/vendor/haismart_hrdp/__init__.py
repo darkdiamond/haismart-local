@@ -26,6 +26,15 @@ from .profiles import (
     validate_write,
     writable_attributes,
 )
+from .udiscovery import (
+    CLOUD_STATE_CONNECTED,
+    DeviceInfo,
+    async_query,
+    build_query,
+    discover,
+    parse_reply,
+    query,
+)
 from .uss import (
     EPP_CMD_GRSETDAC,
     GRSETDAC_ALLOWED_VALUES,
@@ -125,6 +134,14 @@ __all__ = [
     "EPP_CMD_GRSETDAC",
     "build_cae_op_envelope",        # inbound report-envelope reconstruction
     "build_op_message",             # low-level op message; prefer build_op_request_message
+    # UDISCOVERY (UDP :7083) — key-free LAN discovery + cloud-connectivity state
+    "DeviceInfo",
+    "query",
+    "async_query",
+    "discover",
+    "build_query",
+    "parse_reply",
+    "CLOUD_STATE_CONNECTED",
     # per-model attribute profiles
     "AttributeProfile",
     "profile_for",

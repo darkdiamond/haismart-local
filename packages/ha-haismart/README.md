@@ -41,10 +41,20 @@ write path. No cloud at runtime.
   - `switch` ×5 — **strong** (rapid), **quiet** (mute), **health**, **sleep**, **lamp** (front display).
   - `select` — **eco** (off / level 1 / level 2 / level 3).
   - `sensor` ×2 — indoor + outdoor temperature.
+  - `binary_sensor` — **Cloud connection**: whether the AC itself can still reach Haier, asked over a
+    key-free local query (UDP `:7083`) that never contacts Haier. Verifies a firewall block; reads
+    *unknown*, never a fabricated "disconnected", on a unit that doesn't answer it.
   - `sensor` — **Local key** (backup/export): the AC's current localKey, **diagnostic + disabled by
     default** (it's a secret). Enable it to see/copy the key — it then rides along in HA backups, and its
-    attributes carry everything the **manual** onboarding path needs (host + deviceId + version), so you
-    stay Haier-independent even if the account/cloud ever disappears. Stays current across key rotation.
+    attributes carry everything the **manual** onboarding path needs (host + deviceId + version +
+    `uPlusId`), so you stay Haier-independent even if the account/cloud ever disappears. Stays current
+    across key rotation.
+- **Finds a unit that moved**: these modules change address on DHCP, which otherwise looks exactly like
+  an AC that died. After a failed read the coordinator looks the unit up by its deviceId (= MAC) via
+  ARP/DHCP, falling back to a `:7083` broadcast, and updates the entry to follow it — normally within
+  the same poll, so nothing goes unavailable.
+- **Learns its own model ID**: the `uPlusId` that selects the report layout is read from the device, so
+  a fully offline (manual) install decodes exactly as accurately as a cloud-onboarded one.
 - **Write safety** (two gates): every field/value is gated by the library's confirmed encoder (it
   raises rather than send anything not in its allowlist), **and** the coordinator
   validates every change against the device's pulled **digital model** (`validate_write` — writable + temp

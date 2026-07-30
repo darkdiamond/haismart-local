@@ -176,6 +176,7 @@ if _HA_AVAILABLE:
     from unittest.mock import DEFAULT, AsyncMock, patch
 
     import pytest
+    from haismart_hrdp.udiscovery import CLOUD_STATE_CONNECTED, DeviceInfo
 
     LOCALKEY_VERSION = 4
 
@@ -211,6 +212,23 @@ if _HA_AVAILABLE:
         send = AsyncMock(side_effect=_send_side_effect, return_value=[])
         send.baseline = frame
         send.last_frame = None
+
+        # The key-free UDISCOVERY query the coordinator uses for cloud reachability. Mocked here
+        # too: it is a real UDP round trip, so without this every coordinator cycle would try to
+        # open a socket. Default is a device reporting a healthy cloud link; tests override
+        # `cloud.return_value` (None = the unit did not answer).
+        # Host rediscovery (an ARP sweep, falling back to a UDP broadcast). Mocked to "not found"
+        # so the failure path stays fast and touches no network; tests that exercise a DHCP move
+        # set `rediscover.return_value` to the new address.
+        rediscover = AsyncMock(return_value=None)
+        cloud = AsyncMock(
+            return_value=DeviceInfo(
+                device_id="A1B2C3D4E5F6",
+                host="192.168.1.50",
+                port=56800,
+                cloud_state=CLOUD_STATE_CONNECTED,
+            )
+        )
         with (
             patch(
                 "custom_components.haismart.coordinator.async_read_status", read
@@ -229,7 +247,22 @@ if _HA_AVAILABLE:
                 "custom_components.haismart.config_flow.probe_localkey_version",
                 probe,
             ),
+            patch(
+                "custom_components.haismart.coordinator.udiscovery.async_query", cloud
+            ),
+            patch(
+                "custom_components.haismart.coordinator.async_find_host", rediscover
+            ),
         ):
             yield type(
-                "MockUss", (), {"read": read, "send": send, "probe": probe, "frame": frame}
+                "MockUss",
+                (),
+                {
+                    "read": read,
+                    "send": send,
+                    "probe": probe,
+                    "frame": frame,
+                    "cloud": cloud,
+                    "rediscover": rediscover,
+                },
             )

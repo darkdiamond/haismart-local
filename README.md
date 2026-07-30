@@ -77,7 +77,8 @@ One device per air conditioner, with:
 | **Compressor current / frequency** *(diagnostic)* | What the outdoor unit is actually doing |
 | **Coil / discharge temperature** *(diagnostic)* | Evaporator and compressor-discharge temperatures |
 | **Compressor / Fan** *(diagnostic, on/off)* | Whether the compressor and indoor fan are actually running |
-| **Local key** *(diagnostic, off by default)* | Your unit's key, so it rides along in HA backups |
+| **Cloud connection** *(diagnostic, on/off)* | Whether the AC itself can still reach Haier's servers — see [going fully cloud-independent](#going-fully-cloud-independent) |
+| **Local key** *(diagnostic, off by default)* | Your unit's key and model ID, so they ride along in HA backups |
 
 Which of these appear depends on your model — the integration only exposes controls it can actually
 drive on your unit, rather than showing buttons that do nothing.
@@ -124,6 +125,10 @@ or trigger you like. That is useful if, say, you only want frequent readings whi
 
 Polling faster than 10 seconds is not offered on purpose: each cycle is a full connection to the
 unit, and the readings simply do not change fast enough to be worth it.
+
+The **Cloud connection** sensor is refreshed on its own slower cadence (about once a minute) inside
+the same cycle. It costs one small UDP exchange rather than a connection, and the underlying state
+only moves on a scale of minutes, so there is nothing to gain from asking more often.
 
 ## Before you install
 
@@ -237,10 +242,24 @@ If you'd rather your AC never phoned home at all:
    hardcoded addresses.
 3. The key can no longer rotate, so your stored key stays valid indefinitely. You can always re-add
    the unit later through the **Manual** path, with no cloud involved at all.
+4. **Check that it worked.** Each AC has a **Cloud connection** diagnostic sensor. It asks the AC
+   itself — over a local, unauthenticated query that never contacts Haier — whether it can still
+   reach the cloud. Once your block is in place the sensor turns **off**, and off is the state you
+   want. Allow about four minutes: the AC only notices the loss when a keepalive expires. Local
+   control is unaffected the whole time.
 
 Full details, including the domain list: [`INSTALL.md`](INSTALL.md).
 
 ## Troubleshooting
+
+<details>
+<summary><b>My AC changed IP address</b></summary>
+
+Handled for you. If a poll fails, the integration looks the unit up by its device ID — which is the
+Wi-Fi module's MAC — finds where it has moved to, and updates itself to follow, usually within the
+same poll. A DHCP reservation is still tidy, but it is no longer something you have to set up.
+
+</details>
 
 <details>
 <summary><b>"Sign-in failed" / "account not registered"</b></summary>
