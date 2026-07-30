@@ -43,7 +43,9 @@ write path. No cloud at runtime.
   - `sensor` ×2 — indoor + outdoor temperature.
   - `sensor` — **Model ID** (diagnostic): the `uPlusId` that selects the report layout. Its own entity
     rather than an attribute of the localKey sensor, because it is a model identifier and not a secret —
-    reading it should not require enabling an entity whose state is your key.
+    reading it should not require enabling an entity whose state is your key. The state is shortened
+    (the identifier is 64 characters and overflows an entity row; HA has no string equivalent of
+    `suggested_display_precision`), with the exact value on the `uplus_id` attribute.
   - `binary_sensor` — **Cloud connection**: whether the AC itself can still reach Haier, asked over a
     key-free local query (UDP `:7083`) that never contacts Haier. Verifies a firewall block; reads
     *unknown*, never a fabricated "disconnected", on a unit that doesn't answer it.

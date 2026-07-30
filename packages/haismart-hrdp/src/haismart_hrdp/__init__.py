@@ -28,6 +28,7 @@ from .profiles import (
 )
 from .udiscovery import (
     CLOUD_STATE_CONNECTED,
+    CLOUD_STATES,
     DeviceInfo,
     async_query,
     build_query,
@@ -142,6 +143,7 @@ __all__ = [
     "build_query",
     "parse_reply",
     "CLOUD_STATE_CONNECTED",
+    "CLOUD_STATES",
     # per-model attribute profiles
     "AttributeProfile",
     "profile_for",
