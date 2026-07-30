@@ -245,8 +245,8 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         # One connection per cycle: these units accept a single session at a time, so the
         # extended-status query rides along inside the ordinary read rather than costing a second
-        # connection or its own poll interval. `_ask_extended` latches off if a unit turns out not to
-        # cope with it, so an unfamiliar model degrades to plain status instead of failing to poll.
+        # connection or its own poll interval. `_ask_extended` latches off if a unit turns out not
+        # to cope with it, so an unfamiliar model degrades to plain status instead of failing.
         try:
             blobs = await self._async_read()
         except (TimeoutError, OSError, RuntimeError) as err:
