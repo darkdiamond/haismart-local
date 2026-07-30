@@ -9,6 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from haismart_hrdp.udiscovery import CLOUD_STATES
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
@@ -66,9 +67,9 @@ class HaismartCloudConnectionSensor(HaismartEntity, BinarySensorEntity):
     who has deliberately firewalled the unit. `on` means the AC is talking to the cloud; `off` means
     it is cut off, which for that user is the desired state.
 
-    Note the asymmetric latency: losing the cloud takes about four minutes to appear (the module has
-    to time out a keepalive first), regaining it under twenty seconds. `None` -- unknown -- when the
-    unit does not answer the query at all, never a fabricated `off`.
+    Note the asymmetric latency: losing the cloud appears after about two minutes and settles a
+    couple of minutes after that, while regaining it takes about ten seconds. `None` -- unknown --
+    when the unit does not answer the query at all, never a fabricated `off`.
     """
 
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
@@ -85,9 +86,12 @@ class HaismartCloudConnectionSensor(HaismartEntity, BinarySensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        # The raw code is worth keeping: only 1000 (connected) and 1006 (cut off) have been
-        # observed, so anything else is a datapoint worth reporting rather than flattening away.
-        return {"raw_state": self.coordinator.cloud_state}
+        # Three codes have been observed (connected / retrying / disconnected); the label is None
+        # for anything else, which is a datapoint worth reporting rather than flattening away.
+        return {
+            "raw_state": self.coordinator.cloud_state,
+            "state_name": CLOUD_STATES.get(self.coordinator.cloud_state or -1),
+        }
 
 
 class HaismartBinarySensor(HaismartEntity, BinarySensorEntity):

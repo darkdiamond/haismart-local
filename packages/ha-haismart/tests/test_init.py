@@ -1140,6 +1140,7 @@ async def test_diagnostics_carry_cloud_reachability(
     assert diag["cloud"] == {
         "connected": True,
         "raw_state": 1000,
+        "state_name": "connected",
         "supported": True,
         "reported_host": "192.168.1.50",
         "reported_port": 56800,
@@ -1354,7 +1355,10 @@ async def test_model_id_sensor_is_enabled_and_independent_of_the_key_sensor(
 
     state = hass.states.get("sensor.downstairs_ac_model_id")
     assert state is not None                      # enabled by default
-    assert state.state == uplus
+    # the state is shortened so a 64-character identifier does not run past the edge of the UI;
+    # the exact value stays on the attribute, which is what a report should quote
+    assert state.state == "2008610800820324\u20260040"
+    assert state.attributes[CONF_UPLUS_ID] == uplus
     assert state.attributes["product_code"] == "AAC1UKZ01"
     # the key sensor stays disabled: the two are no longer coupled
     assert hass.states.get("sensor.downstairs_ac_local_key") is None
@@ -1369,3 +1373,19 @@ async def test_model_id_sensor_is_unknown_when_never_learned(
     await _setup(hass)
 
     assert hass.states.get("sensor.downstairs_ac_model_id").state == "unknown"
+
+
+async def test_cloud_sensor_labels_the_raw_code(hass: HomeAssistant, mock_uss, freezer) -> None:
+    """`raw_state=1010` means nothing to a user; the label says which half of an outage they are
+    looking at — still ramping down, or settled."""
+    from haismart_hrdp.udiscovery import DeviceInfo
+
+    mock_uss.cloud.return_value = DeviceInfo(
+        device_id="A1B2C3D4E5F6", host="192.168.1.50", cloud_state=1010
+    )
+    await _setup(hass)
+
+    state = hass.states.get(CLOUD)
+    assert state.state == "off"
+    assert state.attributes["raw_state"] == 1010
+    assert state.attributes["state_name"] == "retrying"

@@ -77,7 +77,7 @@ One device per air conditioner, with:
 | **Compressor current / frequency** *(diagnostic)* | What the outdoor unit is actually doing |
 | **Coil / discharge temperature** *(diagnostic)* | Evaporator and compressor-discharge temperatures |
 | **Compressor / Fan** *(diagnostic, on/off)* | Whether the compressor and indoor fan are actually running |
-| **Model ID** *(diagnostic)* | The identifier that selects your unit's report layout — quote it in a bug report about a model that isn't decoded |
+| **Model ID** *(diagnostic)* | The identifier that selects your unit's report layout. Shown shortened (it's 64 characters); the exact value is on the entity's `uplus_id` attribute — quote that in a bug report about a model that isn't decoded |
 | **Cloud connection** *(diagnostic, on/off)* | Whether the AC itself can still reach Haier's servers — see [going fully cloud-independent](#going-fully-cloud-independent) |
 | **Local key** *(diagnostic, off by default)* | Your unit's key, so it rides along in HA backups |
 
@@ -251,7 +251,7 @@ If you'd rather your AC never phoned home at all:
 4. **Check that it worked.** Each AC has a **Cloud connection** diagnostic sensor. It asks the AC
    itself — over a local, unauthenticated query that never contacts Haier — whether it can still
    reach the cloud. Once your block is in place the sensor turns **off**, and off is the state you
-   want. Allow about four minutes: the AC only notices the loss when a keepalive expires. Local
+   want. Allow a couple of minutes: the AC only notices the loss when a keepalive expires. Local
    control is unaffected the whole time.
 
 Full details, including the domain list: [`INSTALL.md`](INSTALL.md).

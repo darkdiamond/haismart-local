@@ -279,10 +279,18 @@ not by fixed offset — the area is a fixed-size region whose populated part var
 
 ### Cloud state (TLV `0x03`)
 
-`1000` = the module has a live connection to Haier's cloud; **`1006`** = it does not.
+Three values have been observed, across a full disconnect/reconnect cycle sampled at 1 Hz:
+
+| value | meaning |
+|---|---|
+| `1000` | connected |
+| `1010` | connection lost, module retrying |
+| `1006` | disconnected; held indefinitely while cut off |
 
 **The rest of the code space is unknown.** These are module-firmware values and Haier publishes no
-documentation for them, so `1000` and `1006` are the only two that have been confirmed.
+documentation for them, so those three are what has been confirmed — and `1010` is the reason a
+decoder must not assume the complement of "disconnected" means connected: for the first two minutes
+of every outage the code is neither of the two values originally observed.
 
 Decode defensively as a result: walk the TLVs by type, treat **only** `1000` as connected, and keep
 the raw number in an attribute so an unrecognised code arrives as a bug report instead of being
@@ -290,11 +298,23 @@ silently flattened into "offline". Enumerating the rest needs sampling a unit at
 block/unblock cycle and a power cycle, to catch whatever transient states exist between the two
 known ones.
 
-Confirmed on hardware in both directions: blocking an AC's route to the cloud gateway moves the
-value to `1006`, restoring it returns `1000`, and no other byte in the reply changes.
+Confirmed on hardware in both directions, and **losing the cloud is not a single step**:
 
-**Latency is asymmetric**: a cut takes about **4 minutes** to appear (a keepalive must expire), a
-restore under **20 seconds**. Poll no faster than once a minute.
+```
+1000  --~2 min-->  1010  --~2 min-->  1006        (blocked)
+1006  -->  [module silent ~3-6 s]  -->  1000      (restored, ~10 s end to end)
+```
+
+Recovery has **no intermediate code**: the module stops answering the discovery query altogether for
+a few seconds while its stack re-establishes, then replies `1000` directly. A query landing in that
+window gets no reply, which is why "no answer" must read as *unknown* rather than as disconnected.
+No byte other than the state TLV changes at any point.
+
+**Latency is asymmetric**: a cut is visible after about **2 minutes** and settles about **2 minutes**
+later; a restore takes about **10 seconds**. Poll no faster than once a minute.
+
+Two units on the same LAN moved **3.0 s apart at both disconnect transitions** — the same offset
+twice, i.e. a fixed phase difference between their timers rather than jitter.
 
 Two related behaviours are worth knowing: the localKey **does not rotate while a unit is cut off**
 (reconnecting is itself a rotation trigger), and the `:56800` read and control path is **completely

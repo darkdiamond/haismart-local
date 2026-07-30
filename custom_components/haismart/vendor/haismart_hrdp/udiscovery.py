@@ -23,11 +23,13 @@ Frame layout (21-byte header, both directions)::
 
 The device answers ``CMD_SEARCH`` with a ``CMD_DEVICE_INFO`` reply carrying fixed identity fields
 plus a counted TLV area. Cloud state is TLV type ``0x03``: ``1000`` = connected, anything else = not.
-These are module-firmware values with no published documentation, and only those two have ever been
-observed — so treat only ``1000`` as a positive and keep the raw value for diagnostics.
+These are module-firmware values with no published documentation, and only three have ever been
+observed (:data:`CLOUD_STATES`) — so treat only ``1000`` as a positive and keep the raw value for
+diagnostics, because an unrecognised code is not a known one.
 
-Timing: losing the cloud takes about **4 minutes** to show up (a keepalive has to expire),
-regaining it under **20 seconds**. Polling faster than once a minute buys nothing.
+Timing: losing the cloud shows up in about **2 minutes** (``1010``), settling to ``1006`` a further
+**~2 minutes** later; regaining it takes about **10 seconds**, during which the module goes briefly
+silent rather than reporting an intermediate code. Polling faster than once a minute buys nothing.
 """
 from __future__ import annotations
 
@@ -57,6 +59,16 @@ TLV_CLOUD_STATE = 0x03
 #: Cloud-state TLV value meaning "the module has a live connection to Haier's cloud".
 CLOUD_STATE_CONNECTED = 1000
 
+#: The confirmed values, observed across a full disconnect/reconnect cycle sampled at 1 Hz. Losing
+#: the cloud is not a single step: the module reports ``1010`` for a couple of minutes before
+#: settling on ``1006``. Anything absent from this map is unknown and must still count as "not
+#: connected" -- these three are what has been seen, not a documented enum.
+CLOUD_STATES = {
+    1000: "connected",
+    1010: "retrying",      # connection lost, module still trying
+    1006: "disconnected",  # settled; held indefinitely while cut off
+}
+
 # Fixed field offsets in the reply, from the start of the datagram.
 _OFF_DEVICE_ID = 0x15
 _OFF_UPLUS_ID = 0x25
@@ -85,6 +97,13 @@ class DeviceInfo:
     firmware: tuple[str, ...] = ()
     cloud_state: int | None = None
     """Raw TLV value; ``None`` when the device did not report one."""
+
+    @property
+    def cloud_state_name(self) -> str | None:
+        """A label for :attr:`cloud_state`, or ``None`` for a value never observed."""
+        if self.cloud_state is None:
+            return None
+        return CLOUD_STATES.get(self.cloud_state)
 
     @property
     def cloud_connected(self) -> bool | None:

@@ -174,13 +174,30 @@ class HaismartModelIdSensor(HaismartEntity, SensorEntity):
 
     @property
     def native_value(self) -> str | None:
-        # None (unknown) rather than "" on a unit we have never learned it for -- e.g. a manual
-        # entry whose AC does not answer the discovery query.
-        return self.coordinator.uplus_id or None
+        """A shortened form, because the identifier is 64 characters and overflows the UI.
+
+        Home Assistant caps a state at 255 characters but offers nothing like the numeric
+        `suggested_display_precision` for strings, so a long identifier simply runs past the edge of
+        an entity row. The full value is on the `uplus_id` attribute (and in diagnostics, and in the
+        config entry), which is where anything machine-readable should read it from anyway.
+
+        The elided middle is the run of padding zeros; the head identifies the family and the tail
+        keeps the two ends distinguishable.
+        """
+        uplus = self.coordinator.uplus_id
+        if not uplus:
+            # None (unknown) rather than "" on a unit we have never learned it for -- e.g. a manual
+            # entry whose AC does not answer the discovery query.
+            return None
+        return f"{uplus[:16]}\u2026{uplus[-4:]}" if len(uplus) > 24 else uplus
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        return {CONF_PRODUCT_CODE: self.coordinator.product_code}
+        return {
+            CONF_PRODUCT_CODE: self.coordinator.product_code,
+            # the exact identifier -- quote THIS in a report, not the shortened state
+            CONF_UPLUS_ID: self.coordinator.uplus_id or None,
+        }
 
 
 class HaismartLocalKeySensor(HaismartEntity, SensorEntity):

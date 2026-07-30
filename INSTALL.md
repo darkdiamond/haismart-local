@@ -132,8 +132,9 @@ a per-device rule. This is the reliable choice if you want a guarantee.
 1. **Watch the AC's own `Cloud connection` sensor** (diagnostic, one per device). This is the direct
    answer: the integration asks the *air conditioner* whether it can still reach Haier, over a local
    unauthenticated query on UDP `:7083` that never contacts Haier itself. When your block is working the
-   sensor reads **off**. Give it ~4 minutes — the AC only notices once a keepalive expires. (Coming back
-   is faster: under 20 seconds.) If it stays **on**, the AC is still getting out → use Option B.
+   sensor reads **off**. Give it ~2 minutes — the AC only notices once a keepalive expires, and its
+   `raw_state` attribute passes through `retrying` before settling on `disconnected`. (Coming back is
+   faster: about 10 seconds.) If it stays **on**, the AC is still getting out → use Option B.
 2. Confirm local read/control still works right after blocking (some IoT gear sulks without cloud — these
    don't, but check): change the setpoint in HA.
 3. Confirm the key stops rotating. A cut-off unit does **not** rotate at all, and rotates within seconds

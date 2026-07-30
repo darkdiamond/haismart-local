@@ -145,3 +145,23 @@ def test_tlv_count_cannot_run_away():
     info = ud.parse_reply(huge)
     assert info is not None
     assert info.device_id == DEV
+
+
+def test_retrying_state_is_not_connected():
+    """1010 is what a module reports for the first couple of minutes of an outage — before it
+    settles on 1006. A decoder that treated "not 1006" as connected would call an AC online for
+    that whole window."""
+    retrying = REPLY_ONLINE[:0x6D] + struct.pack(">I", 1010) + REPLY_ONLINE[0x71:]
+    info = ud.parse_reply(retrying)
+    assert info is not None
+    assert info.cloud_state == 1010
+    assert info.cloud_connected is False
+    assert info.cloud_state_name == "retrying"
+
+
+def test_state_names_cover_only_what_was_observed():
+    assert ud.CLOUD_STATES == {1000: "connected", 1010: "retrying", 1006: "disconnected"}
+    unknown = REPLY_ONLINE[:0x6D] + struct.pack(">I", 4242) + REPLY_ONLINE[0x71:]
+    info = ud.parse_reply(unknown)
+    assert info.cloud_state_name is None      # unnamed, but still...
+    assert info.cloud_connected is False      # ...not connected

@@ -26,7 +26,8 @@ Assistant), wait about 30 seconds so Home Assistant polls at least once, then do
 
 It also helps to quote your unit's **Model ID** — the diagnostic sensor of that name on the device page.
 That identifier is what selects the report layout, so it tells us immediately whether your unit is a family
-we already know or a genuinely new one.
+we already know or a genuinely new one. The sensor shows a shortened form; the exact 64-character value is
+its `uplus_id` attribute (and it is in the diagnostics file too, so attaching that covers it).
 
 Then open a [new model report](https://github.com/enapt/haismart-local/issues/new?template=new_model.yml)
 and attach all three, plus:

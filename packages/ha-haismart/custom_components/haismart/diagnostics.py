@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from haismart_hrdp import STATUS_LAYOUTS, derive_status_layout, select_wire_model
+from haismart_hrdp.udiscovery import CLOUD_STATES
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
 
@@ -72,6 +73,7 @@ async def async_get_config_entry_diagnostics(
         "cloud": {
             "connected": coordinator.cloud_connected,
             "raw_state": coordinator.cloud_state,
+            "state_name": CLOUD_STATES.get(coordinator.cloud_state or -1),
             "supported": coordinator.supports_udiscovery,
             # Where the AC says it is, and whether that still agrees with the address this entry
             # uses. `host_matches: false` means the unit moved on DHCP and the entry is stale --
