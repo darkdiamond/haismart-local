@@ -153,10 +153,14 @@ locally forever. To be fully immune:
 
 1. **Archive every AC's localKey now** (while the cloud is alive). Each AC has a **Local key** diagnostic
    sensor (disabled by default). Enable it on the device page → its state is the key and its attributes
-   carry host + deviceId + version. It then rides along in your HA backups automatically. Keep those safe —
-   the key grants ongoing local control.
+   carry host + deviceId + version + model ID. It then rides along in your HA backups automatically. Keep
+   those safe — the key grants ongoing local control. (The **Model ID** sensor shows the same identifier
+   without exposing the key, and is on by default; both are in your backups either way, since the values
+   are stored with the integration's settings.)
 2. **Onboard each AC via the config-flow `manual` path** (host + deviceId + key from the backup). Manual needs
-   **zero cloud** — no login, no gateway — so nothing depends on Haier being up.
+   **zero cloud** — no login, no gateway — so nothing depends on Haier being up. The model ID it needs to
+   decode your unit correctly is read from the air conditioner itself, so a manual setup is now as accurate
+   as one done through an account.
 3. **Firewall the ACs** (§4) so the key never rotates.
 
 That's it — those ACs are now Haier-independent. **The one thing this doesn't cover** is *factory-resetting* or

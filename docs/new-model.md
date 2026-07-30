@@ -24,6 +24,10 @@ Assistant), wait about 30 seconds so Home Assistant polls at least once, then do
 | 2 | **Cool, 22 °C, fan low, swing off** | the room temperature the remote displays |
 | 3 | **Fan-only, fan high, swing on** | — |
 
+It also helps to quote your unit's **Model ID** — the diagnostic sensor of that name on the device page.
+That identifier is what selects the report layout, so it tells us immediately whether your unit is a family
+we already know or a genuinely new one.
+
 Then open a [new model report](https://github.com/enapt/haismart-local/issues/new?template=new_model.yml)
 and attach all three, plus:
 
