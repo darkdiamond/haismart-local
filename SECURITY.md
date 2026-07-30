@@ -12,13 +12,16 @@ performs.
 - Your account credentials, `refreshToken`, `accessToken` and each AC's `localKey` are **secrets**.
   Keep them out of logs, screenshots, and public issues.
 - **Diagnostics downloads redact all of them automatically**, so the file the issue templates ask for
-  is safe to attach. The `deviceId` is deliberately *not* redacted: it is the Wi-Fi module's MAC
-  address, it is not a credential, and it is needed to interpret a status capture. The decrypted
-  status bytes are likewise safe — they are the same sensor and setting values your remote displays.
+  is safe to attach. The `deviceId` is redacted too — it is only the Wi-Fi module's MAC and not a
+  credential, but it is a stable device identifier and nothing in a bug report needs it. The decrypted
+  status bytes are *not* redacted and are safe: they are the same sensor and setting values your remote
+  displays, and they are what makes an unrecognised report layout diagnosable.
 - Do **not** commit real credentials. `*.local.json` and similar are git-ignored; scrub any pasted logs.
 - Test vectors and examples must use **illustrative** device ids, keys and addresses — never a real
   `localKey`, MAC or LAN address.
-- The **Local key** diagnostic sensor is disabled by default because its value is a secret.
+- The **Local key** diagnostic sensor is disabled by default because its value is a secret. The
+  **Model ID** sensor is enabled by default and is not a secret — it identifies the model, not the unit,
+  and is shared by every air conditioner of that type.
 
 ## Transport
 

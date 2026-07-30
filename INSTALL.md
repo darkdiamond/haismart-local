@@ -102,31 +102,57 @@ can't rotate and your stored key stays valid indefinitely. This is **optional** 
 **The key fact:** a key rotation is *pushed to the AC over the AC's own cloud connection*. So you must block
 **the AC's** internet access, not just Home Assistant's. Keep the AC's **LAN** open (HA still needs `:56800`).
 
+> ⚠️ **The most common way this goes wrong:** reaching for a router feature called *MAC filtering* or
+> *IP/port filtering*. Those usually remove the device from the **network altogether** — it disappears
+> from your LAN, Home Assistant loses it, and local control stops. You want to block a *destination*
+> (Option A), not a device. If everything for that AC goes **unavailable** rather than the Cloud
+> connection sensor going **off**, that is what has happened.
+
 > **Before blocking:** note each AC's current key/version — from HA go **Settings → Devices & Services →
 > Haismart → the device → Diagnostics** (redacted), or run `probe_localkey_version(ip, deviceId)`. Keep a
 > copy as your escape hatch; you can always re-add via the **manual** path (host + deviceId + key), no cloud.
 
-### Option A — DNS / domain block (easiest)
-On your DNS filter (Pi-hole, AdGuard Home, or the router) block these — they cover every Haier endpoint the
-app and the gateway use, including the localKey MQTT gateway `gw-sgp.haieriot.net:58702`:
+### Option A — block the gateway address (recommended)
 
-```
-*.haieriot.net
-*.haier.net
-*.haigeek.com
-```
+Add a firewall rule denying traffic **to `43.156.75.60`** — Haier's MQTT gateway
+(`gw-sgp.haieriot.net:58702`). Source can be the air conditioners, or everything on your LAN if your
+router only does destination rules.
 
-Belt-and-suspenders, also block the gateway **IP** at the firewall — some units hardcode it and skip DNS:
+This is the recommended method for two reasons. It is **proven sufficient**: that single address
+carries both the app's gateway *and* the air conditioners' own uplink, and blocking it takes a unit
+offline (confirmed against Haier's own device list, which reported the units as offline for the
+duration). And because the rule is scoped to a **destination**, it cannot accidentally cut the units
+off your LAN — which is the failure mode below.
 
-```
-43.156.75.60
-```
+If you apply it LAN-wide, note that Home Assistant also loses its ability to fetch a fresh key. That
+is harmless here — a blocked AC never rotates its key, so there is nothing to fetch — but it does mean
+you should lift the rule before deliberately re-keying anything.
 
-### Option B — per-device WAN block (bulletproof)
-On the router, deny **internet (WAN)** for each AC by its **MAC** (whatever the unit's own Wi-Fi
-module reports — check your router's client list) or reserved IP, while
-allowing **LAN**. This catches hardcoded IPs and any baked-in DNS automatically — zero doubt — at the cost of
-a per-device rule. This is the reliable choice if you want a guarantee.
+### Option B — per-device WAN block (only if your router really separates WAN from LAN)
+
+Deny **internet** for each AC by MAC or reserved IP, while allowing LAN. This catches any hardcoded
+address, so it is airtight in principle.
+
+> ⚠️ **Check what your router's feature actually blocks.** Router options named *MAC filtering*,
+> *IP filtering* or *IP/port filtering* frequently block the device from the **network entirely**, not
+> just from the internet — the AC drops off your LAN, Home Assistant loses it, and local control stops.
+> That looks exactly like the integration breaking. If the `Cloud connection` sensor goes *unavailable*
+> rather than *off*, and your other entities go unavailable too, that is what has happened: the rule is
+> too broad. Use Option A instead, or a rule that explicitly permits your LAN subnet **before** denying
+> everything else — order matters.
+
+Blocking by **MAC** is worth preferring over IP where your router offers both: these modules move on
+DHCP, and an IP-based rule silently stops applying when they do, leaving you thinking a unit is
+blocked when it isn't.
+
+### Not recommended — DNS blocking
+
+Blocking `*.haieriot.net`, `*.haier.net` and `*.haigeek.com` on Pi-hole or AdGuard **will not reliably
+stop the air conditioners.** The modules connect to the gateway by a cached IP address and do not
+appear to resolve it at connection time, so a DNS blackhole can leave the unit connected while
+convincing you it is cut off. It still has some value for stopping the *phone app* from reaching
+Haier, but do not use it as your isolation mechanism — and if you do use it, verify with the sensor
+below rather than assuming.
 
 ### Verify it holds
 1. **Watch the AC's own `Cloud connection` sensor** (diagnostic, one per device). This is the direct
@@ -137,14 +163,25 @@ a per-device rule. This is the reliable choice if you want a guarantee.
    faster: about 10 seconds.) If it stays **on**, the AC is still getting out → use Option B.
 2. Confirm local read/control still works right after blocking (some IoT gear sulks without cloud — these
    don't, but check): change the setpoint in HA.
-3. Confirm the key stops rotating. A cut-off unit does **not** rotate at all, and rotates within seconds
-   of reconnecting. So a `Local key` version that hasn't moved in a day is corroboration — but the sensor
-   in step 1 is the signal, since rotation is driven by reconnects rather than a clock, and a quiet period
-   proves nothing on its own.
+3. Confirm the key stops rotating. A cut-off unit does **not** rotate at all. So a `Local key` version
+   that hasn't moved in a day is corroboration — but the sensor in step 1 is the signal, since a quiet
+   period proves nothing on its own (a connected but idle unit can also go a week without rotating).
 
-> **Caveat:** DNS blocking only works if the AC resolves through DNS you control, and the AC's own
-> outbound host isn't guaranteed to fall under the three domains above (it's almost certainly a
-> `*.haieriot.net` broker). Option B removes both doubts.
+### What you keep, and what you give up
+
+Measured over an 11-hour block on real units:
+
+| | |
+|---|---|
+| Reading and control over `:56800` | **unaffected** — setpoint, mode, fan, switches all work normally |
+| The stored local key | stays valid; a cut-off unit does not rotate it |
+| The `Cloud connection` sensor | reports `off` — this is the state you want |
+| The vendor phone app | stops working for that unit; it is cloud-only |
+| Automatic re-keying | unavailable, and unnecessary while the unit stays blocked |
+| Adding a *new* or factory-reset AC | needs the cloud, so lift the rule first |
+
+Blocking and unblocking is **not destructive**: units recover on their own within about ten seconds of
+the rule being removed, with no re-pairing.
 
 ## 5. Optional: survive a Haier shutdown (future-proofing)
 

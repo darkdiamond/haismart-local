@@ -37,7 +37,9 @@ yang diberikan oleh profil awan penghawa dingin anda sendiri, bukan daripada jad
 
 Satu peranti bagi setiap penghawa dingin: **Climate** (suhu, mod, kelajuan kipas, ayunan, hidup/mati),
 penderia **suhu dalaman** dan **luaran**, **suis** (Kuat, Senyap, Kesihatan, Tidur, Lampu paparan),
-pilihan **Eco**, dan penderia diagnostik **Kunci setempat**.
+pilihan **Eco**, penderia **ID Model**, penderia **Sambungan awan** (sama ada penghawa dingin masih
+boleh menghubungi pelayan Haier — berguna jika anda menyekatnya), dan penderia diagnostik **Kunci
+setempat**.
 
 > ℹ️ Home Assistant tidak menyenaraikan bahasa Melayu sebagai bahasa antara muka, jadi integrasi ini
 > tiada terjemahan Melayu. Pengguna di Malaysia dan Brunei biasanya menetapkan Home Assistant kepada

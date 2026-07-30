@@ -243,9 +243,11 @@ If you'd rather your AC never phoned home at all:
 1. **Archive the key first.** Enable the *Local key* diagnostic sensor on the device page — its state
    is the key, and its attributes carry the host, device ID and version. It then rides along in your
    Home Assistant backups automatically.
-2. **Block the AC's internet access** at your router (keep LAN open — Home Assistant still needs port
-   56800). Per-device WAN blocking by MAC is the reliable way; DNS blocking can be bypassed by
-   hardcoded addresses.
+2. **Block the AC's internet access** at your router — the simplest rule that works is denying traffic
+   to `43.156.75.60`, Haier's gateway. Keep the LAN open: Home Assistant still needs port 56800.
+   DNS blocking is *not* reliable here (the units connect by a cached address), and beware router
+   features called "MAC filtering" or "IP filtering" — they often cut the device off your LAN entirely
+   rather than just from the internet.
 3. The key can no longer rotate, so your stored key stays valid indefinitely. You can always re-add
    the unit later through the **Manual** path, with no cloud involved at all.
 4. **Check that it worked.** Each AC has a **Cloud connection** diagnostic sensor. It asks the AC

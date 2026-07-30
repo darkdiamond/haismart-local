@@ -35,7 +35,9 @@ yang disediakan profil cloud AC Anda sendiri, bukan dari tabel per-model yang di
 
 Satu perangkat per AC: **Climate** (suhu, mode, kecepatan kipas, swing, nyala/mati), sensor **suhu
 dalam** dan **luar ruangan**, **sakelar** (Kuat, Senyap, Kesehatan, Tidur, Lampu layar), pilihan
-**Eco**, serta sensor diagnostik **Kunci lokal**. Antarmuka tersedia dalam bahasa Indonesia.
+**Eco**, sensor **ID Model**, sensor **Koneksi cloud** (apakah AC masih dapat menghubungi server
+Haier — berguna jika Anda memblokirnya), serta sensor diagnostik **Kunci lokal**. Antarmuka
+tersedia dalam bahasa Indonesia.
 
 ## Pemasangan
 

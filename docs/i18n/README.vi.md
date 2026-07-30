@@ -34,7 +34,9 @@ của bạn? Rất có thể nó vẫn chạy được — tích hợp tự dự
 
 Mỗi điều hòa là một thiết bị: **Climate** (nhiệt độ đặt, chế độ, tốc độ quạt, đảo gió, bật/tắt), cảm
 biến **nhiệt độ trong nhà** và **ngoài trời**, các **công tắc** (Mạnh, Yên tĩnh, Sức khỏe, Ngủ, Đèn
-hiển thị), lựa chọn **Eco**, và cảm biến chẩn đoán **Khóa cục bộ**. Giao diện có sẵn tiếng Việt.
+hiển thị), lựa chọn **Eco**, cảm biến **Mã model**, cảm biến **Kết nối đám mây** (điều hòa còn liên
+lạc được với máy chủ Haier hay không — hữu ích nếu bạn chặn nó), và cảm biến chẩn đoán **Khóa cục
+bộ**. Giao diện có sẵn tiếng Việt.
 
 ## Cài đặt
 
