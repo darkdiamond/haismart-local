@@ -202,6 +202,9 @@
       }
     },
     "binary_sensor": {
+      "cloud_connection": {
+        "name": "क्लाउड कनेक्शन"
+      },
       "compressor": {
         "name": "Compressor"
       },

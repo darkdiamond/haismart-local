@@ -182,7 +182,7 @@ async def test_resolve_host_by_mac_via_arp(hass: HomeAssistant) -> None:
     pytest.importorskip("aiodiscover")
     from unittest.mock import AsyncMock, MagicMock, patch
 
-    from custom_components.haismart.config_flow import _async_resolve_host_arp
+    from custom_components.haismart.discovery import async_resolve_host_arp
 
     hosts = [
         {"ip": "192.168.1.9", "macaddress": "11:22:33:44:55:66"},
@@ -196,9 +196,9 @@ async def test_resolve_host_by_mac_via_arp(hass: HomeAssistant) -> None:
         return MagicMock(return_value=inst)
 
     with patch("aiodiscover.DiscoverHosts", _fake_discover(hosts)):
-        assert await _async_resolve_host_arp("ACB722AABBCC") == "192.168.1.50"
+        assert await async_resolve_host_arp("ACB722AABBCC") == "192.168.1.50"
     with patch("aiodiscover.DiscoverHosts", _fake_discover([])):
-        assert await _async_resolve_host_arp("ACB722AABBCC") is None
+        assert await async_resolve_host_arp("ACB722AABBCC") is None
 
 
 async def test_reauth_flow_updates_key_and_version(hass: HomeAssistant, mock_uss) -> None:

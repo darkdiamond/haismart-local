@@ -50,6 +50,7 @@ from haismart_hrdp import (
     read_grsetdac_field,
     select_wire_model,
     set_grsetdac_field,
+    udiscovery,
     validate_write,
 )
 from homeassistant.config_entries import ConfigEntry
@@ -79,8 +80,13 @@ from .const import (
     ISSUE_STALE_LOCALKEY,
     ISSUE_UNKNOWN_LAYOUT,
     READ_TIMEOUT,
+    REDISCOVER_COOLDOWN,
+    UDISCOVERY_INTERVAL,
+    UDISCOVERY_MISSES,
+    UDISCOVERY_TIMEOUT,
     WRITE_TIMEOUT,
 )
+from .discovery import async_find_host
 
 # Socket timeout for the cloud MQTT-gateway localKey fetch (TLS connect + one round-trip).
 GATEWAY_TIMEOUT = 8.0
@@ -197,6 +203,26 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.supports_extended: bool | None = None
         self._ask_extended = True
         self._misses = 0
+        # Cloud reachability, from the key-free UDISCOVERY query (see const.py). `None` = not known
+        # (never answered, or the unit does not implement it) -- deliberately NOT False, so a device
+        # that cannot tell us reads "unknown" rather than being reported as cut off.
+        self.cloud_connected: bool | None = None
+        self.cloud_state: int | None = None
+        # Module firmware, reported by the same query. Surfaced as the HA device's software
+        # version, so it lands on the device page and in a diagnostics report without an entity.
+        self.firmware: str | None = None
+        # Where the AC says it is. Only used in diagnostics: if this stops matching the configured
+        # host the unit has moved on DHCP, which is the commonest way a working setup breaks and
+        # otherwise presents as an AC that simply stopped answering.
+        self.reported_host: str | None = None
+        self.reported_port: int | None = None
+        self._rediscover_next = 0.0
+        # Snapshot of the options this coordinator was built with, so the entry's update listener
+        # can tell an options change (reload) from the runtime data writes below (do not reload).
+        self.options: dict[str, Any] = dict(entry.options)
+        self.supports_udiscovery: bool | None = None
+        self._udiscovery_next = 0.0
+        self._udiscovery_misses = 0
         # length of a status report we could only partially decode, or None. Drives the repair.
         self.unknown_layout: int | None = None
         # length of a report that decoded fully via a KNOWN non-classic wire model that is not yet
@@ -222,12 +248,24 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # connection or its own poll interval. `_ask_extended` latches off if a unit turns out not to
         # cope with it, so an unfamiliar model degrades to plain status instead of failing to poll.
         try:
-            blobs = await async_read_status(
-                self.host, self.device_id, self._local_key, timeout=READ_TIMEOUT,
-                extra_request=extended_status_epp_frame() if self._ask_extended else None,
-            )
+            blobs = await self._async_read()
         except (TimeoutError, OSError, RuntimeError) as err:
-            raise UpdateFailed(f"uSS read from {self.host} failed: {err}") from err
+            # Before giving up: the AC may simply have moved. Ask the LAN who is out there, and if
+            # this unit answers from a new address, follow it and retry in the same cycle -- the
+            # user sees nothing at all rather than an AC that went unavailable until they noticed.
+            if not await self._async_rediscover_host():
+                raise UpdateFailed(f"uSS read from {self.host} failed: {err}") from err
+            try:
+                blobs = await self._async_read()
+            except (TimeoutError, OSError, RuntimeError) as retry_err:
+                raise UpdateFailed(
+                    f"uSS read from {self.host} failed: {retry_err}"
+                ) from retry_err
+
+        # The read succeeded, so the unit is reachable: a silent UDISCOVERY query now means the
+        # module does not implement it, not that the network is down. That distinction is why this
+        # sits here rather than at the top of the cycle.
+        await self._async_poll_cloud_state()
 
         telemetry: dict[str, Any] = {}
         for blob in blobs:
@@ -294,6 +332,118 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._misses = 0
         raise UpdateFailed(
             f"no decodable status from {self.host} ({misses} consecutive misses)"
+        )
+
+    async def _async_read(self) -> list[bytes]:
+        """One read cycle against the current host."""
+        return await async_read_status(
+            self.host, self.device_id, self._local_key, timeout=READ_TIMEOUT,
+            extra_request=extended_status_epp_frame() if self._ask_extended else None,
+        )
+
+    async def _async_rediscover_host(self) -> bool:
+        """Find this AC at a new address after a failed read. ``True`` if the host changed.
+
+        These modules move on DHCP, and until now that presented as an AC that simply stopped
+        responding -- indistinguishable from a dead unit or a stale key, and fixable only by hand.
+        Since the deviceId is the module's MAC, an ARP/DHCP lookup recognises the unit wherever it
+        landed and the entry is corrected without the user doing anything (see `discovery.py` for
+        why that is preferred over the protocol's own broadcast).
+
+        Never raises: this runs on a failure path and must not replace the real error.
+        """
+        now = self.hass.loop.time()
+        if now < self._rediscover_next:
+            return False
+        self._rediscover_next = now + REDISCOVER_COOLDOWN
+        host = await async_find_host(self.hass, self.device_id)
+        if host is None or host == self.host:
+            return False
+        _LOGGER.info(
+            "%s moved from %s to %s; updating the entry to follow it",
+            self.device_id, self.host, host,
+        )
+        self.host = host
+        self.hass.config_entries.async_update_entry(
+            self.config_entry, data={**self.config_entry.data, CONF_HOST: host}
+        )
+        return True
+
+    async def _async_poll_cloud_state(self) -> None:
+        """Refresh whether the AC can reach Haier's cloud, on its own slow cadence.
+
+        One UDP round trip on :7083, no localKey and no account involved -- which is the point: it
+        lets someone who has firewalled their AC confirm the block holds without asking Haier
+        anything. Never raises: this is a diagnostic signal and must not be able to fail a poll.
+        """
+        if self.supports_udiscovery is False:
+            return
+        now = self.hass.loop.time()
+        if now < self._udiscovery_next:
+            return
+        self._udiscovery_next = now + UDISCOVERY_INTERVAL
+        try:
+            info = await udiscovery.async_query(self.host, timeout=UDISCOVERY_TIMEOUT)
+        except OSError as err:
+            _LOGGER.debug("UDISCOVERY query to %s failed: %s", self.host, err)
+            info = None
+        if info is None:
+            self.cloud_state = None
+            self.cloud_connected = None
+            self._udiscovery_misses += 1
+            if self._udiscovery_misses >= UDISCOVERY_MISSES:
+                self.supports_udiscovery = False
+                _LOGGER.debug(
+                    "%s does not answer the UDISCOVERY query; the cloud-connection sensor will "
+                    "stay unavailable for this unit", self.host,
+                )
+            return
+        self._udiscovery_misses = 0
+        self.supports_udiscovery = True
+        self._learn_identity(info)
+        if info.cloud_connected is not self.cloud_connected:
+            _LOGGER.debug(
+                "%s cloud connectivity: %s (state %s)",
+                self.host, info.cloud_connected, info.cloud_state,
+            )
+        self.cloud_state = info.cloud_state
+        self.cloud_connected = info.cloud_connected
+
+    def _learn_identity(self, info: udiscovery.DeviceInfo) -> None:
+        """Record what the AC says about itself: firmware, and the uPlusId if we lack it.
+
+        The uPlusId is the precise wire-model key. Until now it arrived only from the cloud device
+        list, so a `manual` (fully offline) install had to fall back to keying the decoder on report
+        length -- which is what makes an unfamiliar model decode partially or not at all. The AC
+        hands it over for free, so an offline install can now be exactly as accurate as a cloud one.
+
+        It is written into the config entry rather than kept in memory: entry data lives in
+        `.storage`, so it rides along in Home Assistant backups the same way the localKey does, and
+        survives a restart without re-querying.
+        """
+        if info.firmware:
+            self.firmware = " / ".join(info.firmware)
+        self.reported_host = info.host or None
+        self.reported_port = info.port or None
+        uplus_id = info.uplus_id.strip("0")  # an all-zero field means "not reported"
+        if not uplus_id or info.uplus_id == self.uplus_id:
+            return
+        if self.uplus_id:
+            # Trust the cloud value we already have; a mismatch is worth knowing about but is not
+            # ours to resolve silently.
+            _LOGGER.debug(
+                "%s reports uPlusId %s but the entry stores %s; keeping the stored one",
+                self.device_id, info.uplus_id, self.uplus_id,
+            )
+            return
+        self.uplus_id = info.uplus_id
+        _LOGGER.info(
+            "learned uPlusId %s for %s from the device itself; the report layout can now be "
+            "selected without cloud credentials", info.uplus_id, self.device_id,
+        )
+        self.hass.config_entries.async_update_entry(
+            self.config_entry,
+            data={**self.config_entry.data, CONF_UPLUS_ID: info.uplus_id},
         )
 
     def _note_unknown_layout(self, blob: bytes) -> None:

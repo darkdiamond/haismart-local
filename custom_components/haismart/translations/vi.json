@@ -202,6 +202,9 @@
       }
     },
     "binary_sensor": {
+      "cloud_connection": {
+        "name": "Kết nối đám mây"
+      },
       "compressor": {
         "name": "Compressor"
       },

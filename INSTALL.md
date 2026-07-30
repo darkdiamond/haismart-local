@@ -129,11 +129,17 @@ allowing **LAN**. This catches hardcoded IPs and any baked-in DNS automatically 
 a per-device rule. This is the reliable choice if you want a guarantee.
 
 ### Verify it holds
-1. Confirm local read/control still works right after blocking (some IoT gear sulks without cloud — these
-   shouldn't, since the local session is a separate pipe, but check): change the setpoint in HA.
-2. Confirm the key stops rotating — watch `probe_localkey_version` for each AC over a few days; if the version
-   stays put, no rotations are getting through and you're fully independent. If it still moves, the AC is
-   leaking to the cloud (hardcoded IP / its own DNS) → use Option B.
+1. **Watch the AC's own `Cloud connection` sensor** (diagnostic, one per device). This is the direct
+   answer: the integration asks the *air conditioner* whether it can still reach Haier, over a local
+   unauthenticated query on UDP `:7083` that never contacts Haier itself. When your block is working the
+   sensor reads **off**. Give it ~4 minutes — the AC only notices once a keepalive expires. (Coming back
+   is faster: under 20 seconds.) If it stays **on**, the AC is still getting out → use Option B.
+2. Confirm local read/control still works right after blocking (some IoT gear sulks without cloud — these
+   don't, but check): change the setpoint in HA.
+3. Confirm the key stops rotating. A cut-off unit does **not** rotate at all, and rotates within seconds
+   of reconnecting. So a `Local key` version that hasn't moved in a day is corroboration — but the sensor
+   in step 1 is the signal, since rotation is driven by reconnects rather than a clock, and a quiet period
+   proves nothing on its own.
 
 > **Caveat:** DNS blocking only works if the AC resolves through DNS you control, and the AC's own
 > outbound host isn't guaranteed to fall under the three domains above (it's almost certainly a
@@ -191,6 +197,10 @@ as the guaranteed floor, flash **ESPHome** onto the module.
   raises the repair notification described above, so it is already named for you. Either way the log
   line includes the frame — please open an issue with it if the entity stays unavailable. It carries
   device state only, no key.
+- **The AC changed IP address.** Handled automatically: after a failed read the integration
+  broadcasts a local discovery query, recognises the unit by its device ID wherever it has landed,
+  and updates the entry to follow it — usually within the same poll, so you see nothing at all. A
+  DHCP reservation is still worth setting, but is no longer required.
 - **Can't reach the AC.** Confirm HA and the AC are on the same subnet and `:56800` is open:
   `nc -z <ac-ip> 56800`. The integration finds the AC by **DHCP** (matching Haier's appliance MAC
   prefixes) or the host you

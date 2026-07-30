@@ -3,6 +3,8 @@
 Thanks for helping improve haismart-local. This is a three-package monorepo (`haismart-hrdp`,
 `haismart-extractor`, `ha-haismart`). `packages/haismart-hrdp/src/haismart_hrdp/uss.py` holds the local
 protocol (transport, crypto, framing) — read it before changing transport, crypto, or framing code.
+`udiscovery.py` alongside it is the second, key-free protocol on UDP `:7083` (discovery, model ID and
+cloud-reachability); see [PROTOCOL.md](PROTOCOL.md) for both.
 
 ## Development setup
 
@@ -29,6 +31,13 @@ deviceIds/keys — never a real device `localKey`, MAC, or LAN address (see [SEC
 - **No unverified frames to a real AC.** The encoder only emits fields/values in its allowlist
   (`set_grsetdac_field` raises otherwise) — keep it that way: don't widen the grSetDAC map without
   evidence for the new field/value.
+- **An unknown code is not a known one.** The cloud-state value in the UDISCOVERY reply is
+  module-firmware defined and undocumented: two values have been confirmed and the rest of the space
+  is unknown. So the decoder treats *only* the confirmed "connected" value as connected, keeps the
+  raw number in an attribute, and reports "unknown" when a device says nothing at all — never a
+  fabricated "disconnected". Telling someone their firewall works when nothing was measured is worse
+  than saying nothing. Hold new fields on that channel to the same bar, and walk its TLVs by type
+  rather than by offset: the record area's populated length varies by device class.
 - **Only surface a reading you've confirmed is real.** The status and extended reports contain more
   fields than the integration exposes. A field becomes an entity only when it's been seen to behave
   correctly on real hardware — several were left out because they didn't (e.g. an outdoor-fan state

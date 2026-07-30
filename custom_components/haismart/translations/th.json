@@ -202,6 +202,9 @@
       }
     },
     "binary_sensor": {
+      "cloud_connection": {
+        "name": "การเชื่อมต่อคลาวด์"
+      },
       "compressor": {
         "name": "Compressor"
       },

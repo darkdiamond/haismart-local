@@ -222,3 +222,80 @@ rule, confirmed on hardware.
 
 See [`docs/new-model.md`](docs/new-model.md). Three status captures in known states are enough to
 pin the word block and identify the sensor bytes by elimination.
+
+## A second local protocol: UDISCOVERY on UDP `:7083`
+
+Alongside the uSS control path there is a **key-free** LAN protocol. It needs no `localKey`, no
+account and no cloud, and one UDP round trip answers three things: which appliances are on the LAN
+and at what address, each one's `uPlusId`, and **whether the appliance can currently reach Haier's
+cloud**. `packages/haismart-hrdp/src/haismart_hrdp/udiscovery.py` implements it.
+
+### Framing
+
+A 21-byte header in both directions:
+
+| off | size | field | notes |
+|---|---|---|---|
+| `0x00` | 5 | magic `"Haier"` | validated by the device — a wrong magic gets silence |
+| `0x05` | 4 | BE32 command | |
+| `0x09` | 2 | BE16 flags | device sends `0x020a`; ignored in requests |
+| `0x0b` | 6 | zeros | |
+| `0x11` | 4 | BE32 payload length | **not** validated by the device |
+| `0x15` | n | payload | |
+
+The only command an appliance answers is **`0x6915`** (search) → **`0x684d`** (device info). Two
+other request codes exist in this protocol family — `0x6851` (diagnose) and `0x6853` (biz
+transparent-transmission) — but the appliances here are **silent to both**, at every payload shape
+tried, unicast and broadcast. They appear to address sub-devices behind a gateway (a class of
+hardware this integration does not cover), so they are deliberately not implemented.
+
+The request payload is 56 bytes and the device checks exactly two things in it: the literal `2.0.0`
+at `+0x10` and `UDISCOVERY_SDK` at `+0x18`. Zeroing either gets no reply. The 16-byte client
+identifier before them is not checked.
+
+> ⚠️ **Broadcast requires source port 7083** — and even then, do not depend on it. Sent from an
+> ephemeral port a unicast query is answered but a broadcast one is silently ignored, so `discover()`
+> binds `:7083`. But broadcast is unreliable in the field regardless: plenty of access points filter
+> or rate-limit it, and units that answer unicast every time can stay silent to a broadcast. Unicast
+> (`query()`) is the dependable call, which is why the integration finds a moved unit by ARP/DHCP
+> first and treats broadcast as a fallback.
+
+### The `0x684d` reply (309 bytes on the reference family)
+
+| off | size | field |
+|---|---|---|
+| `0x15` | 16 | deviceId (MAC, ASCII, NUL-padded) |
+| `0x25` | 32 | `uPlusId`, **BCD-packed** — hex-encoding reproduces the cloud device list's `wifiType` exactly |
+| `0x45` | 4 | BE32 TLV count |
+| `0x49` | … | TLV area, records of `type(1) | length(1) | value` |
+| `0xe5` | 16 | the device's own IP, ASCII |
+| `0xf5` | 2 | BE16 uSS control port (`56800`) |
+| `0xfd` | 5 | SDK version |
+| `0x105` | 16 | two 8-byte firmware strings |
+| `0x115` | 16 | protocol tag `UDISCOVERY_UWT` |
+
+Two TLV types are known: `0x01` deviceId, and **`0x03` cloud state**. Decode by walking the records,
+not by fixed offset — the area is a fixed-size region whose populated part varies by device class.
+
+### Cloud state (TLV `0x03`)
+
+`1000` = the module has a live connection to Haier's cloud; **`1006`** = it does not.
+
+**The rest of the code space is unknown.** These are module-firmware values and Haier publishes no
+documentation for them, so `1000` and `1006` are the only two that have been confirmed.
+
+Decode defensively as a result: walk the TLVs by type, treat **only** `1000` as connected, and keep
+the raw number in an attribute so an unrecognised code arrives as a bug report instead of being
+silently flattened into "offline". Enumerating the rest needs sampling a unit at ~1 Hz across a
+block/unblock cycle and a power cycle, to catch whatever transient states exist between the two
+known ones.
+
+Confirmed on hardware in both directions: blocking an AC's route to the cloud gateway moves the
+value to `1006`, restoring it returns `1000`, and no other byte in the reply changes.
+
+**Latency is asymmetric**: a cut takes about **4 minutes** to appear (a keepalive must expire), a
+restore under **20 seconds**. Poll no faster than once a minute.
+
+Two related behaviours are worth knowing: the localKey **does not rotate while a unit is cut off**
+(reconnecting is itself a rotation trigger), and the `:56800` read and control path is **completely
+unaffected** by cloud loss.

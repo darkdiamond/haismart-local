@@ -26,8 +26,13 @@ from custom_components.haismart.const import (
     CONF_LOCAL_KEY,
     CONF_LOCALKEY_VERSION,
     CONF_PRODUCT_CODE,
+    CONF_SCAN_INTERVAL,
+    CONF_UPLUS_ID,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    REDISCOVER_COOLDOWN,
+    UDISCOVERY_INTERVAL,
+    UDISCOVERY_MISSES,
 )
 
 CLIMATE = "climate.downstairs_ac"
@@ -1031,3 +1036,304 @@ async def test_nothing_decrypted_is_debug_logged_as_key_or_silence(
     assert "nothing decrypted this cycle" in caplog.text
     assert "wrong/stale key" in caplog.text
     assert "localKey v4" in caplog.text  # the stored version, for comparing against the AC's
+
+
+# --- cloud-connectivity sensor (key-free UDISCOVERY query) -----------------------------------
+
+CLOUD = "binary_sensor.downstairs_ac_cloud_connection"
+
+
+async def test_cloud_sensor_reports_the_ac_reaching_haier(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """The AC answers a local, unauthenticated query with its own cloud state — the whole point
+    being that verifying a firewall block never requires contacting Haier."""
+    await _setup(hass)
+
+    state = hass.states.get(CLOUD)
+    assert state is not None
+    assert state.state == "on"
+    assert state.attributes["raw_state"] == 1000
+
+
+async def test_cloud_sensor_goes_off_when_the_ac_is_firewalled(
+    hass: HomeAssistant, mock_uss, freezer
+) -> None:
+    """`off` is the state a user who blocked their AC wants to see, and 1006 is the code a unit
+    reports while it cannot reach the cloud."""
+    from haismart_hrdp.udiscovery import DeviceInfo
+
+    mock_uss.cloud.return_value = DeviceInfo(
+        device_id="A1B2C3D4E5F6", host="192.168.1.50", cloud_state=1006
+    )
+    await _setup(hass)
+    freezer.tick(timedelta(seconds=UDISCOVERY_INTERVAL + 1))
+    await _tick(hass, freezer)
+
+    state = hass.states.get(CLOUD)
+    assert state.state == "off"
+    assert state.attributes["raw_state"] == 1006
+
+
+async def test_silent_unit_reads_unknown_not_disconnected(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """A module that doesn't implement the query must not be reported as cut off — that would tell
+    someone their firewall works when nothing was ever measured."""
+    mock_uss.cloud.return_value = None
+    await _setup(hass)
+
+    state = hass.states.get(CLOUD)
+    assert state.state == "unknown"
+    assert state.attributes["raw_state"] is None
+
+
+async def test_cloud_query_is_throttled_and_then_abandoned(
+    hass: HomeAssistant, mock_uss, freezer
+) -> None:
+    """Two behaviours that keep this cheap: the query runs on its own slow cadence rather than every
+    status read (the flag only moves on a ~4-minute timescale), and a unit that stays silent while
+    demonstrably reachable stops being asked at all."""
+    await _setup(hass)
+    assert mock_uss.cloud.await_count == 1
+
+    await _tick(hass, freezer)  # a normal poll interval is shorter than UDISCOVERY_INTERVAL
+    assert mock_uss.cloud.await_count == 1
+
+    mock_uss.cloud.return_value = None
+    for _ in range(UDISCOVERY_MISSES + 2):
+        freezer.tick(timedelta(seconds=UDISCOVERY_INTERVAL + 1))
+        await _tick(hass, freezer)
+    # the successful query at setup, then exactly UDISCOVERY_MISSES silent ones, then it stops
+    assert mock_uss.cloud.await_count == 1 + UDISCOVERY_MISSES
+
+    # ...and the entity says "unknown" rather than inventing a state
+    assert hass.states.get(CLOUD).state == "unknown"
+
+
+async def test_cloud_query_failure_never_breaks_polling(
+    hass: HomeAssistant, mock_uss, freezer
+) -> None:
+    """It is a diagnostic signal riding along inside the read cycle, so a socket error on it must
+    not be able to take the climate entity down."""
+    await _setup(hass)
+    mock_uss.cloud.side_effect = OSError("network unreachable")
+    freezer.tick(timedelta(seconds=UDISCOVERY_INTERVAL + 1))
+    await _tick(hass, freezer)
+
+    assert hass.states.get(CLIMATE).state == "cool"
+    assert hass.states.get(CLOUD).state == "unknown"
+
+
+async def test_diagnostics_carry_cloud_reachability(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """A cut-off AC cannot be re-keyed, so this explains a stale-localKey report that would
+    otherwise look like a protocol bug."""
+    from custom_components.haismart.diagnostics import (
+        async_get_config_entry_diagnostics,
+    )
+
+    entry = await _setup(hass)
+    diag = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert diag["cloud"] == {
+        "connected": True,
+        "raw_state": 1000,
+        "supported": True,
+        "reported_host": "192.168.1.50",
+        "reported_port": 56800,
+        "host_matches": True,
+    }
+
+
+async def test_diagnostics_flags_an_ac_that_moved_on_dhcp(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """A DHCP move presents as "the AC stopped responding", indistinguishable from a dead unit or a
+    bad key. The AC reports where it thinks it is, so say outright when that has diverged."""
+    from haismart_hrdp.udiscovery import DeviceInfo
+
+    from custom_components.haismart.diagnostics import (
+        async_get_config_entry_diagnostics,
+    )
+
+    mock_uss.cloud.return_value = DeviceInfo(
+        device_id="A1B2C3D4E5F6", host="192.168.1.77", port=56800, cloud_state=1000
+    )
+    entry = await _setup(hass)
+    diag = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert diag["cloud"]["reported_host"] == "192.168.1.77"
+    assert diag["cloud"]["host_matches"] is False
+
+
+async def test_uplus_id_is_learned_from_the_device_and_persisted(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """A manual (fully offline) install has no uPlusId, which is what forces the decoder to key on
+    report length. The AC hands it over for free, so learn it — and write it to the config entry so
+    it survives restarts and rides along in Home Assistant backups like the localKey does."""
+    from haismart_hrdp.udiscovery import DeviceInfo
+
+    uplus = "2008610800820324021200118012560000000000000000000000000000000040"
+    mock_uss.cloud.return_value = DeviceInfo(
+        device_id="A1B2C3D4E5F6", host="192.168.1.50", uplus_id=uplus, cloud_state=1000
+    )
+    entry = await _setup(hass)
+
+    assert entry.data[CONF_UPLUS_ID] == uplus
+    assert entry.runtime_data.uplus_id == uplus
+
+
+async def test_cloud_provided_uplus_id_wins_over_the_device(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """When onboarding already stored one, keep it: a mismatch is worth logging but not ours to
+    resolve silently, and the cloud value is what the vendor app itself uses."""
+    from haismart_hrdp.udiscovery import DeviceInfo
+
+    mock_uss.cloud.return_value = DeviceInfo(
+        device_id="A1B2C3D4E5F6", host="192.168.1.50", uplus_id="9" * 64, cloud_state=1000
+    )
+    entry = _entry(**{CONF_UPLUS_ID: "1" * 64})
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.data[CONF_UPLUS_ID] == "1" * 64
+
+
+async def test_all_zero_uplus_id_is_not_learned(hass: HomeAssistant, mock_uss) -> None:
+    """An all-zero field means "not reported" — storing it would poison wire-model selection."""
+    from haismart_hrdp.udiscovery import DeviceInfo
+
+    mock_uss.cloud.return_value = DeviceInfo(
+        device_id="A1B2C3D4E5F6", host="192.168.1.50", uplus_id="0" * 64, cloud_state=1000
+    )
+    entry = await _setup(hass)
+
+    assert not entry.data.get(CONF_UPLUS_ID)
+
+
+async def test_firmware_reaches_the_device_registry(hass: HomeAssistant, mock_uss) -> None:
+    """Firmware belongs on the device page as a version, not as an entity."""
+    from haismart_hrdp.udiscovery import DeviceInfo
+    from homeassistant.helpers import device_registry as dr
+
+    mock_uss.cloud.return_value = DeviceInfo(
+        device_id="A1B2C3D4E5F6",
+        host="192.168.1.50",
+        firmware=("e_4.3.00", "R_6.0.01"),
+        cloud_state=1000,
+    )
+    await _setup(hass)
+
+    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, "A1B2C3D4E5F6")})
+    assert device is not None
+    assert device.sw_version == "e_4.3.00 / R_6.0.01"
+
+
+async def test_localkey_backup_sensor_carries_the_uplus_id(
+    hass: HomeAssistant, mock_uss, entity_registry
+) -> None:
+    """The backup sensor is the one-stop cloud-independent record: with the key AND the uPlusId, a
+    manual re-add decodes the unit exactly as a cloud-onboarded one would."""
+    from haismart_hrdp.udiscovery import DeviceInfo
+
+    uplus = "2008610800820324021200118012560000000000000000000000000000000040"
+    mock_uss.cloud.return_value = DeviceInfo(
+        device_id="A1B2C3D4E5F6", host="192.168.1.50", uplus_id=uplus, cloud_state=1000
+    )
+    await _setup(hass)
+    entity_registry.async_update_entity(
+        "sensor.downstairs_ac_local_key", disabled_by=None
+    )
+    entries = hass.config_entries.async_entries(DOMAIN)
+    await hass.config_entries.async_reload(entries[0].entry_id)
+    await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.downstairs_ac_local_key")
+    assert state is not None
+    assert state.attributes[CONF_UPLUS_ID] == uplus
+
+
+async def test_ac_that_moved_on_dhcp_is_followed_automatically(
+    hass: HomeAssistant, mock_uss, freezer
+) -> None:
+    """These modules move on DHCP, which until now looked exactly like an AC that died: the entry
+    kept pointing at the old address and only a human could fix it. The broadcast query answers with
+    the deviceId, so the unit is recognised wherever it landed and the entry follows it."""
+
+    entry = await _setup(hass)
+    assert hass.states.get(CLIMATE).state == "cool"
+
+    # the read fails at the old address, then succeeds once the coordinator follows the move
+    mock_uss.read.side_effect = [OSError("no route to host"), [mock_uss.frame]]
+    mock_uss.rediscover.return_value = "192.168.1.77"
+    await _tick(hass, freezer)
+
+    assert entry.data[CONF_HOST] == "192.168.1.77"
+    assert entry.runtime_data.host == "192.168.1.77"
+    # recovered inside the same cycle: the user never sees it go unavailable
+    assert hass.states.get(CLIMATE).state == "cool"
+
+
+async def test_rediscovery_leaves_host_alone_when_nothing_matches(
+    hass: HomeAssistant, mock_uss, freezer
+) -> None:
+    """Nothing on the network claiming to be this AC means the host stays put."""
+    entry = await _setup(hass)
+    mock_uss.read.side_effect = OSError("host down")
+    mock_uss.rediscover.return_value = None
+    await _tick(hass, freezer)
+
+    assert entry.data[CONF_HOST] == "192.168.1.50"
+    assert hass.states.get(CLIMATE).state == "unavailable"
+
+
+async def test_rediscovery_is_cooled_down(
+    hass: HomeAssistant, mock_uss, freezer
+) -> None:
+    """A genuinely offline AC (powered off) must not trigger a network sweep on every poll."""
+    await _setup(hass)
+    mock_uss.read.side_effect = OSError("host down")
+
+    for _ in range(4):
+        await _tick(hass, freezer)
+    assert mock_uss.rediscover.call_count == 1
+
+    freezer.tick(timedelta(seconds=REDISCOVER_COOLDOWN + 1))
+    await _tick(hass, freezer)
+    assert mock_uss.rediscover.call_count == 2
+
+
+async def test_runtime_data_writes_do_not_reload_the_integration(
+    hass: HomeAssistant, mock_uss, freezer
+) -> None:
+    """The coordinator writes to entry.data at runtime (rotated key, learned uPlusId, followed DHCP
+    move). Update listeners fire on data changes too, so an unguarded reload would drop every entity
+    in response to a change the integration had just made itself."""
+    entry = await _setup(hass)
+    before = entry.runtime_data
+
+    mock_uss.read.side_effect = [OSError("no route to host"), [mock_uss.frame]]
+    mock_uss.rediscover.return_value = "192.168.1.77"
+    await _tick(hass, freezer)
+    await hass.async_block_till_done()
+
+    assert entry.data[CONF_HOST] == "192.168.1.77"
+    assert entry.runtime_data is before  # same coordinator: no reload happened
+    assert hass.states.get(CLIMATE).state == "cool"
+
+
+async def test_options_change_still_reloads(hass: HomeAssistant, mock_uss) -> None:
+    """The listener must still do its actual job: a new poll interval needs a rebuild."""
+    entry = await _setup(hass)
+    before = entry.runtime_data
+
+    hass.config_entries.async_update_entry(entry, options={CONF_SCAN_INTERVAL: 60})
+    await hass.async_block_till_done()
+
+    assert entry.runtime_data is not before
+    assert entry.runtime_data.update_interval == timedelta(seconds=60)

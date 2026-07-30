@@ -32,7 +32,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaismartConfigEntry) -> 
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: HaismartConfigEntry) -> None:
-    """Reload on options change (poll interval)."""
+    """Reload when the OPTIONS change (poll interval) -- and only then.
+
+    Update listeners fire on any entry change, data included, and the coordinator writes to
+    ``entry.data`` at runtime: a rotated localKey, a uPlusId learned from the device, a DHCP move
+    it followed. Reloading on those would tear the integration down and rebuild it in response to a
+    change it had just made itself, dropping every entity for a moment each time.
+    """
+    coordinator = entry.runtime_data
+    if entry.options == coordinator.options:
+        return
+    coordinator.options = dict(entry.options)
     await hass.config_entries.async_reload(entry.entry_id)
 
 

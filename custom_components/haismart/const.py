@@ -50,6 +50,19 @@ CONF_BRAND = "brand"
 # a version mismatch on a later probe means the cached key is stale -> reauth.
 CONF_LOCALKEY_VERSION = "localkey_version"
 
+# UDISCOVERY (UDP :7083) — the key-free query that reports whether the AC can reach Haier's cloud.
+# Polled on its own slow cadence inside the read cycle: the flag moves on a ~4-minute timescale (an
+# MQTT keepalive has to expire before a cut shows up), so polling it every status read would be pure
+# waste. Give up on a unit that stays silent while demonstrably reachable — older modules may not
+# implement it, and there is no point querying those forever.
+UDISCOVERY_INTERVAL = 60.0   # seconds between cloud-state queries
+UDISCOVERY_TIMEOUT = 2.0     # per-query socket timeout (a healthy unit answers in <50 ms)
+UDISCOVERY_MISSES = 3        # consecutive silent queries (while reachable) before we stop asking
+# Rediscovery after a failed read: these units move on DHCP, and a moved unit is indistinguishable
+# from a dead one until you go looking for it. Cooled down so a genuinely offline AC (powered off,
+# off the network) doesn't trigger a network sweep on every poll.
+REDISCOVER_COOLDOWN = 300.0  # seconds between attempts
+
 CONF_SCAN_INTERVAL = "scan_interval"
 DEFAULT_SCAN_INTERVAL = 30  # seconds between read cycles (each is handshake+collect+close)
 MIN_SCAN_INTERVAL = 10
