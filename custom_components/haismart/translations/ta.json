@@ -157,20 +157,23 @@
   },
   "entity": {
     "sensor": {
-      "indoor_temperature": {
-        "name": "உட்புற வெப்பநிலை"
-      },
-      "outdoor_temperature": {
-        "name": "வெளிப்புற வெப்பநிலை"
-      },
-      "local_key": {
-        "name": "லோக்கல் கீ"
-      },
       "coil_temperature": {
         "name": "Coil temperature"
       },
       "discharge_temperature": {
         "name": "Discharge temperature"
+      },
+      "indoor_temperature": {
+        "name": "உட்புற வெப்பநிலை"
+      },
+      "local_key": {
+        "name": "லோக்கல் கீ"
+      },
+      "outdoor_temperature": {
+        "name": "வெளிப்புற வெப்பநிலை"
+      },
+      "uplus_id": {
+        "name": "மாடல் ஐடி"
       }
     },
     "switch": {

@@ -157,20 +157,23 @@
   },
   "entity": {
     "sensor": {
-      "indoor_temperature": {
-        "name": "دمای داخل"
-      },
-      "outdoor_temperature": {
-        "name": "دمای بیرون"
-      },
-      "local_key": {
-        "name": "کلید محلی"
-      },
       "coil_temperature": {
         "name": "Coil temperature"
       },
       "discharge_temperature": {
         "name": "Discharge temperature"
+      },
+      "indoor_temperature": {
+        "name": "دمای داخل"
+      },
+      "local_key": {
+        "name": "کلید محلی"
+      },
+      "outdoor_temperature": {
+        "name": "دمای بیرون"
+      },
+      "uplus_id": {
+        "name": "شناسه مدل"
       }
     },
     "switch": {

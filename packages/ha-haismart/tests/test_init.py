@@ -1337,3 +1337,35 @@ async def test_options_change_still_reloads(hass: HomeAssistant, mock_uss) -> No
 
     assert entry.runtime_data is not before
     assert entry.runtime_data.update_interval == timedelta(seconds=60)
+
+
+async def test_model_id_sensor_is_enabled_and_independent_of_the_key_sensor(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """The uPlusId is a model identifier, not a secret — reading it must not require enabling the
+    entity whose state is your localKey. It is what a bug report about an undecoded model needs."""
+    from haismart_hrdp.udiscovery import DeviceInfo
+
+    uplus = "2008610800820324021200118012560000000000000000000000000000000040"
+    mock_uss.cloud.return_value = DeviceInfo(
+        device_id="A1B2C3D4E5F6", host="192.168.1.50", uplus_id=uplus, cloud_state=1000
+    )
+    await _setup(hass)
+
+    state = hass.states.get("sensor.downstairs_ac_model_id")
+    assert state is not None                      # enabled by default
+    assert state.state == uplus
+    assert state.attributes["product_code"] == "AAC1UKZ01"
+    # the key sensor stays disabled: the two are no longer coupled
+    assert hass.states.get("sensor.downstairs_ac_local_key") is None
+
+
+async def test_model_id_sensor_is_unknown_when_never_learned(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """A manual entry whose AC doesn't answer the discovery query has no model ID — that must read
+    unknown, not an empty string that looks like a real value."""
+    mock_uss.cloud.return_value = None
+    await _setup(hass)
+
+    assert hass.states.get("sensor.downstairs_ac_model_id").state == "unknown"

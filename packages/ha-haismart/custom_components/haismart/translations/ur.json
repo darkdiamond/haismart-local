@@ -157,20 +157,23 @@
   },
   "entity": {
     "sensor": {
-      "indoor_temperature": {
-        "name": "اندرونی درجہ حرارت"
-      },
-      "outdoor_temperature": {
-        "name": "بیرونی درجہ حرارت"
-      },
-      "local_key": {
-        "name": "لوکل کی"
-      },
       "coil_temperature": {
         "name": "Coil temperature"
       },
       "discharge_temperature": {
         "name": "Discharge temperature"
+      },
+      "indoor_temperature": {
+        "name": "اندرونی درجہ حرارت"
+      },
+      "local_key": {
+        "name": "لوکل کی"
+      },
+      "outdoor_temperature": {
+        "name": "بیرونی درجہ حرارت"
+      },
+      "uplus_id": {
+        "name": "ماڈل آئی ڈی"
       }
     },
     "switch": {

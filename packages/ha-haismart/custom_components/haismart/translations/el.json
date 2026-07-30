@@ -157,20 +157,23 @@
   },
   "entity": {
     "sensor": {
-      "indoor_temperature": {
-        "name": "Εσωτερική θερμοκρασία"
-      },
-      "outdoor_temperature": {
-        "name": "Εξωτερική θερμοκρασία"
-      },
-      "local_key": {
-        "name": "Τοπικό κλειδί"
-      },
       "coil_temperature": {
         "name": "Coil temperature"
       },
       "discharge_temperature": {
         "name": "Discharge temperature"
+      },
+      "indoor_temperature": {
+        "name": "Εσωτερική θερμοκρασία"
+      },
+      "local_key": {
+        "name": "Τοπικό κλειδί"
+      },
+      "outdoor_temperature": {
+        "name": "Εξωτερική θερμοκρασία"
+      },
+      "uplus_id": {
+        "name": "Αναγνωριστικό μοντέλου"
       }
     },
     "switch": {

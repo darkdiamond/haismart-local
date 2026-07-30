@@ -157,20 +157,23 @@
   },
   "entity": {
     "sensor": {
-      "indoor_temperature": {
-        "name": "Indendørstemperatur"
-      },
-      "outdoor_temperature": {
-        "name": "Udendørstemperatur"
-      },
-      "local_key": {
-        "name": "Lokal nøgle"
-      },
       "coil_temperature": {
         "name": "Coil temperature"
       },
       "discharge_temperature": {
         "name": "Discharge temperature"
+      },
+      "indoor_temperature": {
+        "name": "Indendørstemperatur"
+      },
+      "local_key": {
+        "name": "Lokal nøgle"
+      },
+      "outdoor_temperature": {
+        "name": "Udendørstemperatur"
+      },
+      "uplus_id": {
+        "name": "Model-id"
       }
     },
     "switch": {

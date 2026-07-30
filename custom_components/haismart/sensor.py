@@ -130,6 +130,7 @@ async def async_setup_entry(
     entities: list[SensorEntity] = [HaismartSensor(coordinator, desc) for desc in SENSORS]
     # opt-in backup entity: exposes the localKey so it rides along in HA backups / can be copied.
     # It's a secret, so it's diagnostic + DISABLED by default (enable it, back it up, done).
+    entities.append(HaismartModelIdSensor(coordinator))
     entities.append(HaismartLocalKeySensor(coordinator))
     async_add_entities(entities)
 
@@ -149,6 +150,37 @@ class HaismartSensor(HaismartEntity, SensorEntity):
         if not self.coordinator.data:
             return None
         return self.entity_description.value_fn(self.coordinator.data)
+
+
+class HaismartModelIdSensor(HaismartEntity, SensorEntity):
+    """The AC's uPlusId — the identifier that selects its report layout.
+
+    Enabled by default, unlike the localKey sensor it used to be an attribute of. The two were
+    coupled only because they are both wanted for a manual re-add, but they are not alike: the
+    localKey is a secret, whereas the uPlusId is a model identifier shared by every unit of that
+    model. Reading your model ID should not require enabling an entity whose state is your key.
+
+    It is what a bug report about an undecoded model needs, and it is now obtainable with no cloud
+    account at all -- the air conditioner reports it over the key-free discovery query.
+    """
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_translation_key = "uplus_id"
+    _attr_icon = "mdi:identifier"
+
+    def __init__(self, coordinator: HaismartCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_id}_uplus_id"
+
+    @property
+    def native_value(self) -> str | None:
+        # None (unknown) rather than "" on a unit we have never learned it for -- e.g. a manual
+        # entry whose AC does not answer the discovery query.
+        return self.coordinator.uplus_id or None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {CONF_PRODUCT_CODE: self.coordinator.product_code}
 
 
 class HaismartLocalKeySensor(HaismartEntity, SensorEntity):

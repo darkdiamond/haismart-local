@@ -157,20 +157,23 @@
   },
   "entity": {
     "sensor": {
-      "indoor_temperature": {
-        "name": "İç ortam sıcaklığı"
-      },
-      "outdoor_temperature": {
-        "name": "Dış ortam sıcaklığı"
-      },
-      "local_key": {
-        "name": "Yerel anahtar"
-      },
       "coil_temperature": {
         "name": "Coil temperature"
       },
       "discharge_temperature": {
         "name": "Discharge temperature"
+      },
+      "indoor_temperature": {
+        "name": "İç ortam sıcaklığı"
+      },
+      "local_key": {
+        "name": "Yerel anahtar"
+      },
+      "outdoor_temperature": {
+        "name": "Dış ortam sıcaklığı"
+      },
+      "uplus_id": {
+        "name": "Model kimliği"
       }
     },
     "switch": {

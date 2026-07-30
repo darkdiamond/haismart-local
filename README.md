@@ -77,15 +77,16 @@ One device per air conditioner, with:
 | **Compressor current / frequency** *(diagnostic)* | What the outdoor unit is actually doing |
 | **Coil / discharge temperature** *(diagnostic)* | Evaporator and compressor-discharge temperatures |
 | **Compressor / Fan** *(diagnostic, on/off)* | Whether the compressor and indoor fan are actually running |
+| **Model ID** *(diagnostic)* | The identifier that selects your unit's report layout — quote it in a bug report about a model that isn't decoded |
 | **Cloud connection** *(diagnostic, on/off)* | Whether the AC itself can still reach Haier's servers — see [going fully cloud-independent](#going-fully-cloud-independent) |
-| **Local key** *(diagnostic, off by default)* | Your unit's key and model ID, so they ride along in HA backups |
+| **Local key** *(diagnostic, off by default)* | Your unit's key, so it rides along in HA backups |
 
 Which of these appear depends on your model — the integration only exposes controls it can actually
 drive on your unit, rather than showing buttons that do nothing.
 
-Not everything the air conditioner reports becomes an entity. Its **firmware version** and model
-identifier are properties of the unit rather than readings that change, so they appear on the
-device page and in a diagnostics download instead of as sensors that would never move.
+Not everything the air conditioner reports becomes an entity — its **firmware version**, for
+instance, is a property of the unit rather than a reading that changes, so it appears on the device
+page and in a diagnostics download instead of as a sensor that would never move.
 
 ### Energy monitoring
 

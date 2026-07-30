@@ -157,20 +157,23 @@
   },
   "entity": {
     "sensor": {
-      "indoor_temperature": {
-        "name": "Binnentemperatuur"
-      },
-      "outdoor_temperature": {
-        "name": "Buitentemperatuur"
-      },
-      "local_key": {
-        "name": "Lokale sleutel"
-      },
       "coil_temperature": {
         "name": "Coil temperature"
       },
       "discharge_temperature": {
         "name": "Discharge temperature"
+      },
+      "indoor_temperature": {
+        "name": "Binnentemperatuur"
+      },
+      "local_key": {
+        "name": "Lokale sleutel"
+      },
+      "outdoor_temperature": {
+        "name": "Buitentemperatuur"
+      },
+      "uplus_id": {
+        "name": "Model-ID"
       }
     },
     "switch": {

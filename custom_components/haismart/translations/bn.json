@@ -157,20 +157,23 @@
   },
   "entity": {
     "sensor": {
-      "indoor_temperature": {
-        "name": "অভ্যন্তরীণ তাপমাত্রা"
-      },
-      "outdoor_temperature": {
-        "name": "বাইরের তাপমাত্রা"
-      },
-      "local_key": {
-        "name": "লোকাল কী"
-      },
       "coil_temperature": {
         "name": "Coil temperature"
       },
       "discharge_temperature": {
         "name": "Discharge temperature"
+      },
+      "indoor_temperature": {
+        "name": "অভ্যন্তরীণ তাপমাত্রা"
+      },
+      "local_key": {
+        "name": "লোকাল কী"
+      },
+      "outdoor_temperature": {
+        "name": "বাইরের তাপমাত্রা"
+      },
+      "uplus_id": {
+        "name": "মডেল আইডি"
       }
     },
     "switch": {

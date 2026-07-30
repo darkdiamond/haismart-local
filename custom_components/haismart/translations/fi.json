@@ -157,20 +157,23 @@
   },
   "entity": {
     "sensor": {
-      "indoor_temperature": {
-        "name": "Sisälämpötila"
-      },
-      "outdoor_temperature": {
-        "name": "Ulkolämpötila"
-      },
-      "local_key": {
-        "name": "Paikallinen avain"
-      },
       "coil_temperature": {
         "name": "Coil temperature"
       },
       "discharge_temperature": {
         "name": "Discharge temperature"
+      },
+      "indoor_temperature": {
+        "name": "Sisälämpötila"
+      },
+      "local_key": {
+        "name": "Paikallinen avain"
+      },
+      "outdoor_temperature": {
+        "name": "Ulkolämpötila"
+      },
+      "uplus_id": {
+        "name": "Mallitunnus"
       }
     },
     "switch": {
