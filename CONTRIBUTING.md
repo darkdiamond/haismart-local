@@ -91,6 +91,13 @@ Start from [`docs/new-model.md`](docs/new-model.md): three status captures in kn
 control-word block and identify the sensor bytes by elimination. If you have the unit in front of
 you, that is the fastest path to a correct layout.
 
+You rarely have to find the layout by hand. When a report is unrecognised, diagnostics runs a search
+over the known families — see [`docs/report-layouts.md`](docs/report-layouts.md) — and attaches
+ranked candidates, because every layout met so far has been a known map displaced from some word
+onward. `probe_layout()` is callable directly if you want to try variations. Treat its output as a
+shortlist to verify, never as a result: the ranking is a heuristic, close scores are common, and the
+same page explains why the registry, not the search, remains the authority on what ships.
+
 Two rules make this safe:
 
 - **Reads may be widened on inference; writes may not.** An unknown report length is decoded as far
@@ -106,3 +113,14 @@ Per-model semantics live in `packages/haismart-hrdp/src/haismart_hrdp/profiles.p
 `AttributeProfile`, keyed by the cloud `product_code`. `profile_from_device_config()` can self-derive
 one from Haier's digital model, so most models need no hand-coding — contribute the `product_code`
 mapping and, where possible, a status vector for the test suite.
+
+Where a model packs its status *differently*, that is a **report layout**, and it lives in
+`wire_models.py` rather than in a profile. [`docs/report-layouts.md`](docs/report-layouts.md) is the
+inventory of every known one and the rules for adding another. Two conventions matter when you do:
+
+- **Key on the Model ID as well as the length.** Length is a decent key but not a sound one — the
+  presets contain a genuine collision at 149 bytes. The Model ID is reported by the units themselves
+  on the discovery channel, so it is available even without cloud credentials.
+- **Leave out what the captures did not settle.** A field whose position is unconfirmed stays off the
+  read *and* out of the write map, so it reads as unavailable rather than wrong. Several shipped
+  families omit fields for exactly this reason, each with the reason written next to it.

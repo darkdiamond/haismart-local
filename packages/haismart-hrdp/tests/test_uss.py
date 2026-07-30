@@ -726,6 +726,147 @@ def test_extended36_control_encodes_a_6001_group_set_from_word_20():
         wm.encode_control(base, {"targetTemperature": 99})
 
 
+# --- 209-byte "extended-46" family (haismart-local issue #6, HSU-24HFAB) ------------------
+# The extended-36 layout with a TEN-word block inserted at word 25: words 1..24 sit exactly where
+# extended-36 puts them (the same media module in 1..19, then targetTemperature@w20.b8,
+# mode@w21.b13, the boolean word@w22), and everything from extended-36's word 25 upward moves ten
+# words later — indoor@w35.b8, outdoor@w36.b8, errCode@w37.b8, the energy counter@w44+w45. The
+# setpoint counts HALF degrees from zero here, not whole degrees offset by 16. Three real decrypted
+# reports. No secret: the all-zero CAE report prefix.
+#   OFF: power off, retained setpoint 24, room 25.5, outdoor 37, mode cool, vertical swing off
+STATUS_209_OFF = bytes.fromhex(
+    "00002715000000004e5601000003020000040100000000000000000000000000"
+    "0000000000000000000000000000000000000000000000000000000000000000"
+    "00000000000000000000000000000081ffff7e000000000000066d0120640000"
+    "0000000000000000000000000000000000000000000000000000000000000100"
+    "00003000260f0200000000000000000000000000000000000000000000000000"
+    "333c65100043000000000000000000000000000b794000000000000000000000"
+    "00000000000000000000000000000000c9"
+)
+#   COOL: power on, setpoint 22, room 25.5, outdoor 37, mode cool, vertical swing off
+STATUS_209_COOL = bytes.fromhex(
+    "00002715000000004e5601000003020000040100000000000000000000000000"
+    "0000000000000000000000000000000000000000000000000000000000000000"
+    "00000000000000000000000000000081ffff7e000000000000066d0120640000"
+    "0000000000000000000000000000000000000000000000000000000000000100"
+    "00002c00260f0201000000000000060000000000000000000000000000000000"
+    "333c65100003000000000000000000000000000b794000000000000000000000"
+    "000000000000000000000000000000008c"
+)
+#   FAN: power on, setpoint 22, room 26.0, outdoor 36, mode fan_only, vertical swing ON
+STATUS_209_FAN = bytes.fromhex(
+    "00002715000000004e5601000003020000040100000000000000000000000000"
+    "0000000000000000000000000000000000000000000000000000000000000000"
+    "00000000000000000000000000000081ffff7e000000000000066d0120640000"
+    "0000000000000000000000000000000000000000000000000000000000000100"
+    "00002c00c60f020100000000000c020000000000000000000000000000000000"
+    "343c6410000f000000000000000000000000000b794000000000000000000000"
+    "0000000000000000000000000000000040"
+)
+
+
+def test_extended46_decodes_the_real_reports():
+    """The 209-byte family (issue #6). Same climate block as extended-36 for words 20..22, sensors
+    ten words further on, and a half-degree setpoint."""
+    from haismart_hrdp import profile_for
+
+    prof = profile_for("AAC1UKZ01")
+    assert len(STATUS_209_OFF) == len(STATUS_209_COOL) == len(STATUS_209_FAN) == 209
+
+    off = uss.parse_full_status(STATUS_209_OFF, prof)
+    assert off == {
+        "power": False, "target_temperature": 24.0, "current_temperature": 25.5,
+        "outdoor_temperature": 37.0, "operation_mode": "1", "swing_vertical": False,
+        "mode": "cool", "layout": "extended46", "writable": True,
+    }
+    cool = uss.parse_full_status(STATUS_209_COOL, prof)
+    assert cool["power"] is True and cool["target_temperature"] == 22.0 and cool["mode"] == "cool"
+    fan = uss.parse_full_status(STATUS_209_FAN, prof)
+    assert fan["mode"] == "fan_only" and fan["swing_vertical"] is True
+    assert fan["current_temperature"] == 26.0 and fan["outdoor_temperature"] == 36.0
+
+    # The classic partial decode is what this family REPLACES: byte 92 is the media module's
+    # `volume` (100), which reads as a 48 C setpoint, and the classic power bit lands elsewhere so
+    # the unit looks permanently off. Both are the symptoms the family was added to fix.
+    assert STATUS_209_COOL[92] + 16 == 48
+    assert not STATUS_209_COOL[97] & 0x01
+
+
+def test_extended46_setpoint_is_half_degrees_both_ways():
+    """The setpoint encoding is what separates this family from extended-36 at the same positions:
+    the wire counts half degrees from zero, so a report reading 44 is 22 C, not 60 C."""
+    wm = uss.select_wire_model(209)
+    assert wm is not None and wm.family == "extended46"
+    # read back in the classic representation the coordinator/climate hand around (degC - 16)
+    assert wm.current_write_value(STATUS_209_COOL, "targetTemperature") == 22 - 16
+    assert wm.current_write_value(STATUS_209_OFF, "targetTemperature") == 24 - 16
+
+    base = wm.baseline_words(STATUS_209_COOL)
+    words = wm.encode_control(base, {"targetTemperature": 25 - 16})
+    assert words[0] == 50                       # 25 C on the wire == 50 half-degrees
+    # a value that fits the 8-bit field but is not a temperature this family accepts
+    with pytest.raises(ValueError, match="outside the 32..60"):
+        wm.encode_control(base, {"targetTemperature": 99 - 16})
+
+
+def test_extended46_control_reuses_the_extended36_group_set():
+    """Words 20..24 — the whole settable block — sit where extended-36 puts them, so control is that
+    family's `6001` group-set seeded from report word 20."""
+    wm = uss.select_wire_model(209)
+    assert wm.group_cmd == b"\x60\x01" and wm.write_base_word == 20 and wm.word_count == 5
+    base = wm.baseline_words(STATUS_209_COOL)
+    assert bytes(base) == STATUS_209_COOL[130:140]
+
+    words = wm.encode_control(base, {"operationMode": 6, "onOffStatus": 0})
+    frame = uss.build_epp_frame(0x01, wm.group_cmd, words)
+    assert frame[:2] == b"\xff\xff" and frame[10:12] == b"\x60\x01"
+    assert (frame[2] + sum(frame[3:-1])) & 0xFF == frame[-1]
+    assert (words[2] << 8 | words[3]) >> 13 == 6      # operationMode word2 b13 -> fan_only
+    assert words[5] & 0x01 == 0                       # onOffStatus word3 b0 cleared
+    assert words[0] == base[0]                        # setpoint untouched
+
+    # Fan speed and the swings are NOT settable on this family: their positions are not settled, and
+    # the encoder must refuse a field it cannot place rather than write to a guessed word.
+    for unsupported in ("windSpeed", "windDirectionVertical", "windDirectionHorizontal"):
+        with pytest.raises(KeyError):
+            wm.encode_control(base, {unsupported: 1})
+
+
+def test_probe_layout_proposes_the_209_family_unaided():
+    """The prober is what should keep an unknown report from needing hand analysis: given the three
+    reports and the device's own attribute values, it proposes the right map without the family
+    being registered. Run here with extended-46 removed from the candidate list so the search has to
+    find it."""
+    from haismart_hrdp import wire_models
+
+    reports = [STATUS_209_OFF, STATUS_209_COOL, STATUS_209_FAN]
+    shadow = {"targetTemperature": "24", "operationMode": "1", "onOffStatus": "true"}
+    families = tuple(f for f in wire_models.PROBE_FAMILIES if f.family != "extended46")
+    original = wire_models.PROBE_FAMILIES
+    wire_models.PROBE_FAMILIES = families
+    try:
+        candidates = wire_models.probe_layout(reports, shadow=shadow)
+    finally:
+        wire_models.PROBE_FAMILIES = original
+
+    assert candidates, "the prober found no layout for a report it should explain"
+    best = candidates[0]
+    assert best["family"] == "extended36"
+    assert best["shift"] == 10 and best["setpoint"] == "half"
+    # and the proposal decodes the reports the way the shipped family does
+    assert [d["target_temperature"] for d in best["decoded"]] == [24.0, 22.0, 22.0]
+    assert [d["current_temperature"] for d in best["decoded"]] == [25.5, 25.5, 26.0]
+
+
+def test_probe_layout_rejects_a_report_it_cannot_explain():
+    """An empty word array has no plausible room temperature, so nothing is proposed — the prober
+    must say "no idea" rather than rank a map that reads a powered-off 16 C unit out of zeros."""
+    from haismart_hrdp import wire_models
+
+    blank = bytes(STATUS_209_OFF[:92]) + bytes(len(STATUS_209_OFF) - 92)
+    assert wire_models.probe_layout(blank) == []
+
+
 def test_grsetdac_baseline_still_classic_only():
     """The classic grSetDAC baseline helper stays classic-only — a non-classic length raises (that
     path uses its own wire-model encoder, not this one)."""

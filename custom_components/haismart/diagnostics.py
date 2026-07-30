@@ -3,7 +3,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from haismart_hrdp import STATUS_LAYOUTS, derive_status_layout, select_wire_model
+from haismart_hrdp import (
+    STATUS_LAYOUTS,
+    derive_status_layout,
+    probe_layout,
+    select_wire_model,
+)
 from haismart_hrdp.udiscovery import CLOUD_STATES
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
@@ -111,7 +116,12 @@ def _layout_summary(coordinator) -> dict[str, Any] | None:
             return {"resolved": True, "family": wm.family, "writable": wm.writable}
     layout = derive_status_layout(blob, coordinator.digital_model)
     if layout is None:
-        return {"resolved": False}
+        # No known layout claims this report. Rather than leaving a maintainer to work the word
+        # array out by hand, propose the layouts that fit: every model met so far has been a known
+        # family whose fields are displaced from some word onward, and the device's own reported
+        # attribute values decide between the candidates. This makes a diagnostics download
+        # self-sufficient for adding the model — no second round-trip to the reporter.
+        return {"resolved": False, "candidates": _layout_candidates(coordinator)}
     return {
         "resolved": True,
         "verified": layout.verified,      # False == derived from the length, not a confirmed entry
@@ -119,6 +129,28 @@ def _layout_summary(coordinator) -> dict[str, Any] | None:
         "indoor_temp_offset": layout.indoor_temp,
         "outdoor_temp_offset": layout.outdoor_temp,
     }
+
+
+def _layout_candidates(coordinator) -> list[dict[str, Any]]:
+    """Ranked layout proposals for a report nothing recognises (see :func:`probe_layout`).
+
+    Every report the coordinator has kept is offered, because a candidate has to explain all of them
+    and the reports were captured in different states. The device's own attribute values from its
+    digital model are passed as the tie-breaker.
+    """
+    reports: list[bytes] = []
+    for blob in (coordinator.last_raw_status, *coordinator.recent_reports):
+        if blob and blob not in reports:
+            reports.append(blob)
+    if not reports:
+        return []
+    model = coordinator.digital_model or {}
+    shadow = {
+        attr["name"]: attr["value"]
+        for attr in model.get("attributes") or []
+        if isinstance(attr, dict) and attr.get("name") and attr.get("value") is not None
+    }
+    return probe_layout(reports, shadow=shadow)
 
 
 def _model_summary(model: dict[str, Any] | None) -> dict[str, Any] | None:

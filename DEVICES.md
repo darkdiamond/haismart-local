@@ -16,12 +16,14 @@ model missing from this table will very likely still work. The table records wha
 | `AAC1UKZ01` | HSU-24VRRA03TF | 127-byte classic | ❌ | `deviceType 0201203a`, OUI `AC:B7:22`. Cooling-only. The original unit this project was written for. |
 | `AAC1UKZ01` | HSU-12HFMF/013WUSDC(W) | 117-byte compact-12 | ✅ | OUI `04:E2:29`. A **different wire family** — all attributes (sensors included) are packed into one word array. Reading and control both confirmed on real hardware. |
 | `AAD180E00` | HSU-12KCROC(IN)-R32 | 165-byte extended-36 | ✅ | `deviceType 02012036`. The classic bit map **displaced by 19 words**: the report carries a voice/media block first, so the climate attributes start at word 20. **Confirmed on hardware by the reporter** (2026-07-29): reading and full control — temperature, modes, fan speed, health, display light. |
+| `AAC1UKZ01` | HSU-24HFAB/013WUSDC(W)-T3 | 209-byte extended-46 | ✅ | OUI `5C:24:1F`. Extended-36 with a further ten-word block inserted at word 25, and a **half-degree setpoint**. Reading confirmed against three captured states; control covers power, mode and temperature — fan speed and the swings are not settled yet. |
 
 > **"Report" is the status layout, not just a length.** Most models share the *classic* family (the
 > setpoint/mode/fan/power in a leading control-word block, sensors after it); the length only varies
 > with how many control words the model carries. A few models use a genuinely different packing
-> (**compact-12**) or the classic packing at a different offset (**extended-36**), which the
-> integration recognises and decodes automatically.
+> (**compact-12**) or the classic packing at a different offset (**extended-36**, **extended-46**),
+> which the integration recognises and decodes automatically. Full inventory:
+> [`docs/report-layouts.md`](docs/report-layouts.md).
 
 ## What the Eco levels actually do
 

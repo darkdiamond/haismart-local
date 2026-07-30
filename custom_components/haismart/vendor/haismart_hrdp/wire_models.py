@@ -33,7 +33,7 @@ monitoring-only.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 # Attribute-array geometry, shared with uss.py (kept local to avoid an import cycle).
@@ -103,10 +103,13 @@ class WriteField:
     * ``"std_enum"``   — a STD code; map via ``std_to_epp`` (refuse anything not in it).
     * ``"onoff"``      — any nonzero classic "on" value packs ``on_value``; ``0`` packs ``0`` (swing,
       whose classic raw value — 0x0c / 7 — is not this family's code).
+    * ``"celsius"``    — a setpoint the family encodes as **°C × ``scale``** rather than as the
+      classic ``°C − 16``. The classic value is converted back to °C first, so the caller keeps
+      handing setpoints in one representation whatever the family does on the wire.
 
-    ``min_epp``/``max_epp`` bound a ``"passthrough"`` field whose valid range is narrower than its bit
-    width — the setpoint being the case that matters, where 8 bits would otherwise accept a wire value
-    meaning 115 °C. The enum kinds are already bounded by their own maps.
+    ``min_epp``/``max_epp`` bound a field whose valid range is narrower than its bit width — the
+    setpoint being the case that matters, where 8 bits would otherwise accept a wire value meaning
+    115 °C. The enum kinds are already bounded by their own maps.
     """
 
     word: int
@@ -117,6 +120,7 @@ class WriteField:
     on_value: int = 1
     min_epp: int | None = None
     max_epp: int | None = None
+    scale: float = 1.0      # "celsius": wire value per °C
 
 
 @dataclass(frozen=True)
@@ -187,6 +191,8 @@ class WireModel:
             return inverse.get(raw)
         if wf.kind == "onoff":
             return wf.on_value if raw else 0
+        if wf.kind == "celsius":
+            return round(raw / wf.scale) - 16
         return raw
 
     def encode_control(self, baseline: bytes, changes: Mapping[str, int]) -> bytes:
@@ -220,6 +226,8 @@ class WireModel:
                 )
         elif wf.kind == "onoff":
             epp = wf.on_value if value else 0
+        elif wf.kind == "celsius":
+            epp = round((value + 16) * wf.scale)
         else:  # passthrough
             epp = value
         if not 0 <= epp < (1 << wf.length):
@@ -389,9 +397,270 @@ EXTENDED36 = WireModel(
     },
 )
 
+# --- extended-46 (209-byte report) --------------------------------------------------------------
+
+# Control: words 20..24 — the whole settable block — are positioned exactly as on the extended-36
+# family, so the group-set is that family's: command `6001`, five words, seeded from report word 20.
+# What differs is only the setpoint's units (see below).
+#
+# Not offered here, deliberately: `windSpeed` and the swings. This family reports a wind-speed code
+# outside the set its own device model declares, and its vertical vane answers at a different word
+# from the one extended-36 uses — so neither position is settled, and the encoder must never emit a
+# field it cannot place. Both become available once a report is seen with those controls varied.
+_EXT46_WRITE = {
+    # 16..30 C. The wire value is °C × 2 on this family, not the classic °C − 16, so 16..30 C is
+    # wire 32..60 — a range that would read as 48..76 C under the classic units.
+    "targetTemperature": WriteField(1, 8, 8, "celsius", scale=2.0, min_epp=32, max_epp=60),
+    "operationMode": WriteField(2, 13, 3, "std_enum", std_to_epp={0: 0, 1: 1, 2: 2, 4: 4, 6: 6}),
+    "onOffStatus": WriteField(3, 0, 1, "passthrough"),
+    "healthMode": WriteField(3, 1, 1, "passthrough"),
+    "rapidMode": WriteField(3, 3, 1, "passthrough"),
+    "muteStatus": WriteField(3, 4, 1, "passthrough"),
+    "silentSleepStatus": WriteField(3, 5, 1, "passthrough"),
+    "screenDisplayStatus": WriteField(3, 9, 1, "passthrough"),
+}
+
+# The "extended-46" family: a 58-word report (209 B) that is the **extended-36 layout with a ten-word
+# block inserted at word 25**. Words 1..24 sit exactly where extended-36 puts them — the same
+# voice/media module in words 1..19, then the climate block at words 20..22 — and every attribute
+# from extended-36's word 25 upward is found ten words later. The inserted block belongs to a
+# dual-airflow cabinet (the device model for these units carries a second set of per-tower fan and
+# vane attributes); a single-flow unit leaves most of it at zero.
+#
+# Because the report begins with that media module, the classic partial decode misfires here exactly
+# as it does on extended-36: byte 92 is the module's `volume` (100), which reads as a 48 C setpoint,
+# and the classic power bit lands in an unrelated word so the unit always looks off.
+#
+# Three positions differ from extended-36 in kind rather than place, and each is fixed by the values
+# the reports themselves carry:
+#   * `targetTemperature` is **°C × 2**, not °C − 16 (its device model declares whole-degree steps,
+#     so the extra bit of resolution is unused, but the encoding is halves).
+#   * `current_temperature` is likewise a half-degree count, as on the classic family.
+#   * the vertical vane answers at word 25 — inside the inserted block — where the classic vane
+#     encoding still applies (the "swinging" flag is bit 3 of the nibble).
+#
+# Deliberately omitted from the READ: `windSpeed` (this family reports a code its own device model
+# does not declare, so its position is not settled — the enum below would drop it anyway, leaving the
+# fan mode absent rather than wrong), horizontal swing, and the air-quality/humidity attributes.
+# Read but not published as climate: this family DOES carry a working cumulative-energy register at
+# words 44+45 (32-bit), unlike the classic family where it reads zero — its unit is not yet
+# established, so it stays out until it can be labelled correctly.
+EXTENDED46 = WireModel(
+    family="extended46",
+    report_lengths=frozenset({209}),
+    # Keyed exactly as well as by length: the uPlusId is reported by the units themselves on the
+    # discovery channel, so it is available without cloud credentials.
+    uplus_ids=frozenset({"2008610800820324021200118017740000000000000000000000000000000040"}),
+    writable=True,
+    group_cmd=b"\x60\x01",
+    word_count=5,
+    write_base_word=20,     # report word 20 == group-set word 1, as on extended-36
+    write_fields=_EXT46_WRITE,
+    fields={
+        "power": WireField(22, 0, 1, kind="bool"),
+        "target_temperature": WireField(20, 8, 8, kind="int", k=0.5, c=0.0),
+        "current_temperature": WireField(35, 8, 8, kind="temp", k=0.5, c=0.0),
+        "outdoor_temperature": WireField(36, 8, 8, kind="temp", k=1.0, c=-64.0),
+        "operation_mode": WireField(21, 13, 3, kind="enum", enum=_EXT36_MODE),
+        "swing_vertical": WireField(25, 3, 1, kind="bool"),
+    },
+)
+
 # Every non-classic family known to the library. The classic 125/127 family is NOT here — it keeps
 # its verified inline decode + write path in uss.py.
-WIRE_MODELS: tuple[WireModel, ...] = (COMPACT12, EXTENDED36)
+WIRE_MODELS: tuple[WireModel, ...] = (COMPACT12, EXTENDED36, EXTENDED46)
+
+
+# --- layout probing ------------------------------------------------------------------------------
+
+# The classic family's map, expressed as a WireModel purely so the prober below can try it like any
+# other. It is NOT in ``WIRE_MODELS``: the classic lengths keep their hardware-verified inline decode
+# in ``uss.py``, and an empty ``report_lengths``/``uplus_ids`` means this can never be *selected*.
+_CLASSIC_PROBE = WireModel(
+    family="classic",
+    report_lengths=frozenset(),
+    fields={
+        "power": WireField(3, 0, 1, kind="bool"),
+        "target_temperature": WireField(1, 8, 8, kind="int", k=1.0, c=16.0),
+        "current_temperature": WireField(6, 8, 8, kind="temp", k=0.5, c=0.0),
+        "outdoor_temperature": WireField(7, 8, 8, kind="temp", k=1.0, c=-64.0),
+        "operation_mode": WireField(2, 13, 3, kind="enum", enum=_EXT36_MODE),
+        "wind_speed": WireField(2, 8, 3, kind="enum", enum=_EXT36_FAN),
+        "swing_vertical": WireField(1, 3, 1, kind="bool"),
+    },
+)
+
+# Families the prober tries. Ordered widest-first so an equal score prefers the map that explains
+# more of the report.
+PROBE_FAMILIES: tuple[WireModel, ...] = (EXTENDED46, EXTENDED36, COMPACT12, _CLASSIC_PROBE)
+
+# How the prober weighs each piece of agreement. Sensor plausibility is worth less than agreeing with
+# a value the device itself reported through another channel, because plausibility is cheap to hit by
+# chance in a report that is mostly zeros.
+_SCORE_SHADOW_MATCH = 4
+_SCORE_ENUM_KNOWN = 2
+_SCORE_SENSOR_PLAUSIBLE = 1
+
+# A report is mostly zeros, so a candidate whose fields all land on empty words "decodes" perfectly
+# into a cold, off, 16 C unit. The prober therefore demands a room temperature that a room could
+# actually have — an unpowered word reads 0 C and is rejected — rather than the wide band
+# `WireModel.decode` uses to guard an already-chosen family.
+_PROBE_INDOOR_C = (5.0, 45.0)
+
+# The two setpoint encodings seen in the wild. Some families put whole degrees on the wire offset by
+# 16; others count half-degrees from zero. The difference is invisible in a single report — both are
+# a plausible setpoint — so the prober tries each rather than assuming.
+_SETPOINT_ENCODINGS = (("offset16", 1.0, 16.0), ("half", 0.5, 0.0))
+
+# Shadow attribute name -> the decoded key it should agree with, and how to compare.
+_SHADOW_KEYS: Mapping[str, str] = {
+    "targetTemperature": "target_temperature",
+    "indoorTemperature": "current_temperature",
+    "operationMode": "operation_mode",
+    "windSpeed": "wind_speed",
+    "onOffStatus": "power",
+}
+
+
+def _shift_model(model: WireModel, pivot: int, shift: int, setpoint: tuple) -> WireModel:
+    """``model`` with every field at or above ``pivot`` moved ``shift`` words later, and its setpoint
+    read with the ``setpoint`` encoding ``(name, k, c)``.
+
+    The displacement is the one transformation that has explained every layout so far: a unit follows
+    a known family but carries extra words in the middle of the array, so the fields after the
+    insertion point are all displaced by the same amount and the ones before it do not move at all.
+    """
+    _, k, c = setpoint
+    moved = {}
+    for key, f in model.fields.items():
+        word = f.word + shift if f.word >= pivot else f.word
+        if key == model.target_key:
+            moved[key] = WireField(word, f.bit, f.length, f.kind, k, c, f.enum)
+        else:
+            moved[key] = WireField(word, f.bit, f.length, f.kind, f.k, f.c, f.enum)
+    return WireModel(
+        family=f"{model.family}+{shift}@w{pivot}" if shift else model.family,
+        report_lengths=frozenset(),
+        fields=moved,
+        indoor_key=model.indoor_key,
+        target_key=model.target_key,
+    )
+
+
+def _score(decoded: dict, shadow: Mapping[str, str] | None) -> int:
+    score = 0
+    if decoded.get("current_temperature") is not None:
+        score += _SCORE_SENSOR_PLAUSIBLE
+    if decoded.get("outdoor_temperature") is not None:
+        score += _SCORE_SENSOR_PLAUSIBLE
+    if decoded.get("operation_mode") is not None:
+        score += _SCORE_ENUM_KNOWN
+    if decoded.get("wind_speed") is not None:
+        score += _SCORE_ENUM_KNOWN
+    if not shadow:
+        return score
+    for attr, key in _SHADOW_KEYS.items():
+        reported, got = shadow.get(attr), decoded.get(key)
+        if reported is None or got is None:
+            continue
+        if key == "power":
+            match = got is (str(reported).lower() == "true")
+        elif key in ("operation_mode", "wind_speed"):
+            match = str(got) == str(reported)
+        else:
+            try:
+                match = abs(float(got) - float(reported)) < 0.51
+            except (TypeError, ValueError):
+                match = False
+        if match:
+            score += _SCORE_SHADOW_MATCH
+    return score
+
+
+def probe_layout(
+    reports: bytes | Sequence[bytes],
+    *,
+    shadow: Mapping[str, str] | None = None,
+    max_shift: int = 24,
+    limit: int = 3,
+) -> list[dict]:
+    """Rank plausible layouts for a report no registry entry claims — the first step in adding a
+    model, done from the reports themselves rather than by hand.
+
+    Every layout met so far is a known family whose fields are displaced from some word onward, so
+    the search is over ``(family, pivot, shift, setpoint encoding)``: try each family with its fields
+    at or above each ``pivot`` moved up to ``max_shift`` words later, keep the candidates that decode
+    plausibly, and rank them.
+
+    Two things separate a real match from a coincidence, and both matter because a status report is
+    mostly zeros — a map whose fields all land on empty words "decodes" into a cold, powered-off unit
+    at its minimum setpoint:
+
+    * **Several reports.** Pass every report available (they are captured in different states); a
+      candidate must decode *all* of them plausibly, and its score is the weakest one's. A map that
+      lands on empty words scores the same in every state, so varied states break the tie.
+    * **``shadow``** — the device's own attribute values, from its ``digital_model``, keyed by
+      attribute name. A candidate that reproduces values the device published through a different
+      channel is almost certainly right.
+
+    Returns up to ``limit`` candidates, best first, each ``{"family", "pivot", "shift", "setpoint",
+    "score", "decoded"}``. An empty list means nothing fits, which is itself the useful answer: the
+    report is a layout unlike any known family rather than a displaced one.
+    """
+    blobs = [reports] if isinstance(reports, (bytes, bytearray)) else list(reports)
+    seen: set[tuple] = set()
+    out: list[dict] = []
+    for model in PROBE_FAMILIES:
+        pivots = sorted({f.word for f in model.fields.values()} | {1})
+        for pivot in pivots:
+            for shift in range(max_shift + 1):
+                for encoding in _SETPOINT_ENCODINGS:
+                    candidate = _shift_model(model, pivot, shift, encoding)
+                    # A shift below the lowest field restates the pivot=1 map; skip the duplicates so
+                    # the ranking is not filled with several spellings of one candidate.
+                    key = (
+                        encoding[0],
+                        tuple(sorted((k, f.word, f.bit) for k, f in candidate.fields.items())),
+                    )
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    scores, decodes = [], []
+                    for blob in blobs:
+                        decoded = candidate.decode(blob)
+                        indoor = (decoded or {}).get(candidate.indoor_key)
+                        if (
+                            decoded is None
+                            or decoded.get(candidate.target_key) is None
+                            or indoor is None
+                            or not _PROBE_INDOOR_C[0] <= indoor <= _PROBE_INDOOR_C[1]
+                        ):
+                            scores = []
+                            break
+                        scores.append(_score(decoded, shadow))
+                        decodes.append(
+                            {k: v for k, v in decoded.items() if k not in ("layout", "writable")}
+                        )
+                    if not scores:
+                        continue
+                    out.append(
+                        {
+                            "family": model.family,
+                            "pivot": pivot,
+                            "shift": shift,
+                            "setpoint": encoding[0],
+                            "score": min(scores),
+                            "decoded": decodes,
+                        }
+                    )
+    # Ties are common and the tie-break is the whole difference between a useful proposal and a
+    # misleading one: prefer the smallest displacement, then the one that moves the FEWEST fields
+    # (the highest pivot). Several pivots produce the same score whenever the words between them
+    # carry nothing that varies, and the candidate that disturbs least of a known family is the one
+    # that is actually right — a lower pivot drags mode and fan along with the sensors and reads
+    # them from the wrong words while still scoring the same.
+    out.sort(key=lambda c: (-c["score"], c["shift"], -c["pivot"]))
+    return out[:limit]
 
 
 def select_wire_model(length: int, uplus_id: str | None = None) -> WireModel | None:

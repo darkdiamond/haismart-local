@@ -50,3 +50,12 @@ The three captures are diffed to locate the control-word block and the sensor by
 temperature you noted confirms the indoor-temperature byte immediately, since it is stored as twice
 the reading. Adding the layout is then usually a single table entry, and you will be asked to confirm
 the result on your unit before it ships.
+
+Much of that is now done for you inside the diagnostics file itself. When a report's layout isn't
+recognised, the file carries a **ranked list of candidate layouts** — each naming a known model
+family, how far its fields are displaced, and the values it decodes from *your* captures. That is why
+three states are worth the trouble: one report is mostly zeros, so many candidate layouts explain it
+equally well, and only a change of state tells them apart. A candidate has to explain all three.
+
+The candidates are a starting point, not the answer — they are checked against the states you
+describe and against your unit's own published settings before anything ships.

@@ -82,6 +82,7 @@ from .wire_models import (
     WireField,
     WireModel,
     WriteField,
+    probe_layout,
     select_wire_model,
 )
 
@@ -112,6 +113,7 @@ __all__ = [
     "WriteField",
     "WIRE_MODELS",
     "select_wire_model",
+    "probe_layout",
     "StatusContainer",
     "parse_hello_resp",
     "check_hello_resp",

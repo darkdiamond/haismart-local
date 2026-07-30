@@ -104,6 +104,10 @@ _MISSES_BEFORE_PROBE = 2
 _LOG_FRAME_BYTES = 192
 _LOG_FRAME_MAX = 3
 
+# Distinct status reports kept while a layout is unrecognised, for the layout proposals in
+# diagnostics. Three states is what it takes to tell candidate maps apart; more adds little.
+_RECENT_REPORTS = 3
+
 
 # A control op carries raw EPP values; the digital model describes each attribute in STD values.
 # For fields that map 1:1 to a model attribute (same STD name), this converts the EPP value so
@@ -241,6 +245,8 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._udiscovery_misses = 0
         # length of a status report we could only partially decode, or None. Drives the repair.
         self.unknown_layout: int | None = None
+        # distinct status reports kept while the layout is unrecognised (see _remember_report)
+        self._recent_reports: list[bytes] = []
         # length of a report that decoded fully via a KNOWN non-classic wire model that is not yet
         # write-capable (read-only family), or None. Blocks control with a clear message — unlike
         # unknown_layout it raises no repair, because monitoring works.
@@ -458,8 +464,27 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             data={**self.config_entry.data, CONF_UPLUS_ID: info.uplus_id},
         )
 
+    @property
+    def recent_reports(self) -> tuple[bytes, ...]:
+        """Distinct status reports seen while the layout was unrecognised (diagnostics)."""
+        return tuple(self._recent_reports)
+
+    def _remember_report(self, blob: bytes) -> None:
+        """Keep a few *distinct* status reports while the layout is unrecognised.
+
+        Working out an unknown layout needs reports taken in different states — one report is mostly
+        zeros, so many candidate maps explain it equally well, and only a change of state tells them
+        apart. Identical reports are dropped so an idle unit cannot fill the store with copies of
+        one state, and the store is cleared as soon as a layout is recognised.
+        """
+        if blob in self._recent_reports:
+            return
+        self._recent_reports.append(blob)
+        del self._recent_reports[:-_RECENT_REPORTS]
+
     def _note_unknown_layout(self, blob: bytes) -> None:
         """Record an unrecognised report length: log once, raise a repair, remember the blob."""
+        self._remember_report(blob)
         if self.unknown_layout == len(blob):
             return      # already reported; do not repeat every poll
         self.unknown_layout = len(blob)
@@ -489,6 +514,7 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     def _clear_unknown_layout(self) -> None:
+        self._recent_reports.clear()
         if self.unknown_layout is None:
             return
         self.unknown_layout = None

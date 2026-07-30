@@ -296,7 +296,9 @@ The AC answered and the connection is fine, but Home Assistant couldn't read the
 - **A report layout we don't know yet** — your model packs its status differently. The integration
   recognises several layouts automatically and, for anything else, decodes what it can and says so
   explicitly instead of failing outright. Please [open an issue](#before-you-open-an-issue) with
-  diagnostics; adding a new layout is usually a small change.
+  diagnostics; adding a new layout is usually a small change, and the diagnostics file works out
+  the likely answer for you — it carries a ranked list of candidate layouts with the values each
+  one decodes. See [`docs/report-layouts.md`](docs/report-layouts.md).
 
 </details>
 
@@ -358,7 +360,9 @@ worth a great deal:
 1. Include your **AC model number**, the Wi-Fi module if you know it, and the app you pair with.
 
 **Adding support for a new model** is the most valuable contribution here, and it doesn't require
-writing any code — see [`docs/new-model.md`](docs/new-model.md) for a short capture procedure.
+writing any code — see [`docs/new-model.md`](docs/new-model.md) for a short capture procedure. When a
+report's layout isn't recognised, the diagnostics file proposes candidate layouts itself;
+[`docs/report-layouts.md`](docs/report-layouts.md) is the inventory of every known one.
 
 ## Contributing
 

@@ -1035,6 +1035,53 @@ async def test_diagnostics_carry_what_a_new_model_report_needs(
     assert diag["last_raw_status"] == mock_uss.frame.hex()
 
 
+async def test_diagnostics_propose_layouts_for_an_unrecognised_report(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """An unrecognised report must arrive with candidate layouts attached.
+
+    The point is that a diagnostics download is self-sufficient: without this, every new model costs
+    a round-trip to the reporter before anyone can even see what the report might be. The candidates
+    are proposals to check, not conclusions — but they turn a blank page into a shortlist.
+    """
+    from haismart_hrdp import parse_full_status
+
+    from custom_components.haismart.diagnostics import (
+        async_get_config_entry_diagnostics,
+    )
+
+    # a real report with one byte appended -> a length nothing claims
+    mock_uss.read.return_value = [mock_uss.frame + b"\x00"]
+    entry = await _setup(hass)
+    coordinator = entry.runtime_data
+    assert coordinator.unknown_layout is not None
+
+    diag = await async_get_config_entry_diagnostics(hass, entry)
+    layout = diag["report"]["layout"]
+    assert layout["resolved"] is False
+    # This report IS the classic family, so that is what must be proposed -- and the proposal has to
+    # reproduce the decode the classic path itself produces, or it is not a usable starting point.
+    candidates = layout["candidates"]
+    assert candidates, "no layout proposed for a report that is a known map plus a stray byte"
+    best = candidates[0]
+    assert best["family"] == "classic"
+    # ... and it must reproduce what the classic path itself decodes from the unpadded report,
+    # field for field. A proposal that merely looks plausible is not a usable starting point.
+    truth = parse_full_status(mock_uss.frame)
+    assert best["decoded"][0] == {
+        key: truth[key]
+        for key in (
+            "power", "target_temperature", "current_temperature", "outdoor_temperature",
+            "operation_mode", "wind_speed", "swing_vertical",
+        )
+    }
+
+    # the reports the proposals were derived from are kept, and dropped once a layout is recognised
+    assert coordinator.recent_reports
+    coordinator._clear_unknown_layout()
+    assert coordinator.recent_reports == ()
+
+
 async def test_control_errors_are_translated_and_name_the_device(
     hass: HomeAssistant, mock_uss
 ) -> None:

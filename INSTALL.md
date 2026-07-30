@@ -169,7 +169,7 @@ below rather than assuming.
 
 ### What you keep, and what you give up
 
-Measured over an 11-hour block on real units:
+Confirmed on hardware, with the block sustained:
 
 | | |
 |---|---|
