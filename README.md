@@ -73,7 +73,7 @@ One device per air conditioner, with:
 | **Outdoor temperature** | Outdoor probe, on units that have one |
 | **Switches** | Strong, Quiet, Health, Sleep, Display light |
 | **Eco** | Eco level, on models where it's confirmed |
-| **Power** | Live power draw in watts, on units that report it |
+| **Power** *(diagnostic)* | Live power draw in watts, on units that report it |
 | **Compressor current / frequency** *(diagnostic)* | What the outdoor unit is actually doing |
 | **Coil / discharge temperature** *(diagnostic)* | Evaporator and compressor-discharge temperatures |
 | **Compressor / Fan** *(diagnostic, on/off)* | Whether the compressor and indoor fan are actually running |
@@ -82,6 +82,10 @@ One device per air conditioner, with:
 
 Which of these appear depends on your model — the integration only exposes controls it can actually
 drive on your unit, rather than showing buttons that do nothing.
+
+Not everything the air conditioner reports becomes an entity. Its **firmware version** and model
+identifier are properties of the unit rather than readings that change, so they appear on the
+device page and in a diagnostics download instead of as sensors that would never move.
 
 ### Energy monitoring
 
@@ -139,7 +143,8 @@ Worth knowing up front, so nothing surprises you:
   Running another Haier local integration against the same unit will cause both to misbehave.
 - Installing this **does not stop your AC talking to Haier**. It keeps its own cloud connection
   unless you firewall it — see [going fully cloud-independent](#going-fully-cloud-independent).
-- Give the AC a **DHCP reservation**. If its IP moves, Home Assistant has to find it again.
+- A **DHCP reservation** for the AC is tidy but optional: if its address moves, the integration
+  finds the unit again by its device ID and follows it.
 - Social logins (Google / Facebook) have no password to sign in with. Create a throwaway
   email/password Haier account, **share the AC to it** in the app, and use that here — sharing grants
   the same local access as ownership.
@@ -307,8 +312,9 @@ Two ways to fix it, per sensor:
 <details>
 <summary><b>Entities are unavailable, or the AC dropped off</b></summary>
 
-Check its IP hasn't changed (set a DHCP reservation), that nothing else is holding a local session
-to the same unit, and that `nc -z <ac-ip> 56800` still succeeds.
+An address change is not usually the cause — the integration follows a unit that moves. Check that
+nothing else is holding a local session to the same air conditioner (these modules accept one
+connection at a time), and that `nc -z <ac-ip> 56800` still succeeds.
 
 </details>
 
