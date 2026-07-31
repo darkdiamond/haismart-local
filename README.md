@@ -90,6 +90,11 @@ only from the switches. A preset is exclusive: choosing one clears the others in
 the AC. The switches and the Eco select are still there for the individual fields and for choosing
 which eco level you want.
 
+**Swing** comes as both controls Home Assistant offers. The four-way one (off / up-down / left-right
+/ both) moves the two vanes together and is unchanged; alongside it, `climate.set_swing_horizontal_mode`
+moves the left-right vane on its own, without touching the up-down one. Units whose left-right
+position we haven't confirmed get only the four-way control.
+
 Not everything the air conditioner reports becomes an entity — its **firmware version**, for
 instance, is a property of the unit rather than a reading that changes, so it appears on the device
 page and in a diagnostics download instead of as a sensor that would never move.

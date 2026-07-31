@@ -22,6 +22,10 @@ from homeassistant.components.climate import (
     ClimateEntityFeature,
     HVACMode,
 )
+from homeassistant.components.climate.const import (
+    SWING_HORIZONTAL_OFF,
+    SWING_HORIZONTAL_ON,
+)
 from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
@@ -84,9 +88,12 @@ class HaismartClimate(HaismartEntity, ClimateEntity):
         | ClimateEntityFeature.TURN_OFF
     )
     # The two axes are independent fields on the wire (vertical = word1 low nibble, horizontal =
-    # word4 bits 0-2), but they are presented as ONE control with the conventional four-way choice,
-    # matching how other AC integrations expose swing.
+    # word4 bits 0-2). This four-way control is the conventional way to expose swing and stays
+    # exactly as it was — dashboards and automations use `swing_mode: both|vertical|horizontal|off`
+    # — while `swing_horizontal_mode` below adds the axis-at-a-time control Home Assistant has had
+    # since 2024.12. Both read the same decoded state, so they cannot disagree.
     _attr_swing_modes = [SWING_OFF, SWING_VERTICAL, SWING_HORIZONTAL, SWING_BOTH]
+    _attr_swing_horizontal_modes = [SWING_HORIZONTAL_OFF, SWING_HORIZONTAL_ON]
     _enable_turn_on_off_backwards_compatibility = False
 
     def __init__(self, coordinator: HaismartCoordinator) -> None:
@@ -127,6 +134,11 @@ class HaismartClimate(HaismartEntity, ClimateEntity):
         if presets:
             self._attr_preset_modes = [PRESET_NONE, *presets]
             self._attr_supported_features |= ClimateEntityFeature.PRESET_MODE
+        # Same gate for the horizontal axis: extended-46 deliberately leaves windDirectionHorizontal
+        # out of its write map because the position isn't settled, and the encoder must never be
+        # handed a field it cannot place.
+        if coordinator.supports_field("windDirectionHorizontal"):
+            self._attr_supported_features |= ClimateEntityFeature.SWING_HORIZONTAL_MODE
 
     @property
     def _state(self) -> dict[str, Any]:
@@ -207,6 +219,28 @@ class HaismartClimate(HaismartEntity, ClimateEntity):
             field: (on if preset == preset_mode else 0)
             for preset, (field, on) in _PRESET_FIELDS.items()
             if preset in offered
+        })
+
+    @property
+    def swing_horizontal_mode(self) -> str | None:
+        """The left-right vane on its own, as Home Assistant models it since 2024.12.
+
+        The four-way ``swing_mode`` above still works and still moves both axes together; this is
+        for the cases that control could not express — "turn on left-right swing" had to be spelled
+        `swing_mode: both`, which also starts the up-down vane.
+        """
+        horizontal = self._state.get("swing_horizontal")
+        if horizontal is None:
+            return None
+        return SWING_HORIZONTAL_ON if horizontal else SWING_HORIZONTAL_OFF
+
+    async def async_set_swing_horizontal_mode(self, swing_horizontal_mode: str) -> None:
+        """Move the left-right vane only, leaving the up-down one where the user put it."""
+        h_enum = GRSETDAC_ENUMS["windDirectionHorizontal"]
+        await self.coordinator.async_send_control({
+            "windDirectionHorizontal": h_enum[
+                "on" if swing_horizontal_mode == SWING_HORIZONTAL_ON else "off"
+            ]
         })
 
     def _mode_code(self, token: str | None) -> int | None:

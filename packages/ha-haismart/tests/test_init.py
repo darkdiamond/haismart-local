@@ -525,6 +525,47 @@ async def test_presets_absent_on_a_family_that_cannot_write_them(
     assert "preset_mode" not in climate.attributes
 
 
+async def test_horizontal_swing_moves_only_that_axis(hass: HomeAssistant, mock_uss) -> None:
+    """The axis-at-a-time control must leave the other vane where the user put it.
+
+    Through the four-way control alone, "start left-right swing" has to be spelled
+    `swing_mode: both`, which also starts the up-down vane.
+    """
+    mock_uss.read.return_value = [make_status_frame(swing=True)]   # vertical swinging
+    await _setup(hass)
+    climate = hass.states.get(CLIMATE)
+    assert climate.attributes["swing_horizontal_modes"] == ["off", "on"]
+    assert climate.attributes["swing_horizontal_mode"] == "off"
+    assert climate.attributes["swing_mode"] == "vertical"          # the old control is unchanged
+
+    mock_uss.send.baseline = make_status_frame(swing=True)
+    await hass.services.async_call(
+        "climate",
+        "set_swing_horizontal_mode",
+        {"entity_id": CLIMATE, "swing_horizontal_mode": "on"},
+        blocking=True,
+    )
+    assert _sent_field(mock_uss.send, "windDirectionHorizontal") == 0x07
+    # the vertical nibble goes back exactly as the AC reported it (8 = the swinging flag), rather
+    # than being rewritten to the 0x0c the encoder uses to turn it on
+    assert _sent_field(mock_uss.send, "windDirectionVertical") == 0x08
+
+
+async def test_horizontal_swing_absent_when_the_family_omits_it(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """extended-46 leaves windDirectionHorizontal out of its write map on purpose (the position is
+    not settled), so the control must not be offered on that family."""
+    from conftest import make_extended46_frame
+
+    mock_uss.read.return_value = [make_extended46_frame()]
+    await _setup(hass)
+
+    climate = hass.states.get(CLIMATE)
+    assert "swing_horizontal_modes" not in climate.attributes
+    assert "swing_horizontal_mode" not in climate.attributes
+
+
 async def test_switch_toggles_confirmed_bit(hass: HomeAssistant, mock_uss) -> None:
     await _setup(hass)
     await hass.services.async_call(
