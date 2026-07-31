@@ -57,6 +57,7 @@ from haismart_hrdp import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -422,7 +423,32 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.hass.config_entries.async_update_entry(
             self.config_entry, data={**self.config_entry.data, CONF_HOST: host}
         )
+        self._sync_device_registry()
         return True
+
+    def _sync_device_registry(self) -> None:
+        """Keep the HA device's firmware version and configuration link in step with what we learn.
+
+        `entity.py` builds its DeviceInfo once per entity, so both values freeze at the moment the
+        entities are created. Firmware that arrives on a later UDISCOVERY reply -- because the
+        first query went unanswered, or the module was slow -- then never shows up at all, and
+        after the AC moves on DHCP the configuration link still points at the address it left, on
+        the very page someone opens to work out why it stopped answering.
+
+        Never raises, and a no-op once both agree: this runs on every successful discovery query.
+        """
+        registry = dr.async_get(self.hass)
+        device = registry.async_get_device(identifiers={(DOMAIN, self.device_id)})
+        if device is None:
+            return      # the first refresh runs before the platforms create the device
+        updates: dict[str, Any] = {}
+        if self.firmware and device.sw_version != self.firmware:
+            updates["sw_version"] = self.firmware
+        url = f"http://{self.host}"
+        if device.configuration_url != url:
+            updates["configuration_url"] = url
+        if updates:
+            registry.async_update_device(device.id, **updates)
 
     async def _async_poll_cloud_state(self) -> None:
         """Refresh whether the AC can reach Haier's cloud, on its own slow cadence.
@@ -485,6 +511,7 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.firmware = " / ".join(info.firmware)
         self.reported_host = info.host or None
         self.reported_port = info.port or None
+        self._sync_device_registry()
         uplus_id = info.uplus_id.strip("0")  # an all-zero field means "not reported"
         if not uplus_id or info.uplus_id == self.uplus_id:
             return

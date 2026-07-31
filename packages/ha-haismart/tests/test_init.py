@@ -1533,6 +1533,36 @@ async def test_firmware_reaches_the_device_registry(hass: HomeAssistant, mock_us
     assert device.sw_version == "e_4.3.00 / R_6.0.01"
 
 
+async def test_firmware_learned_late_still_reaches_the_device_page(
+    hass: HomeAssistant, mock_uss, freezer
+) -> None:
+    """Firmware that arrives after the entities exist must still land on the device page.
+
+    DeviceInfo is built once per entity, so a unit whose first discovery query went unanswered used
+    to show no firmware version for the rest of the run even once it started answering.
+    """
+    from haismart_hrdp.udiscovery import DeviceInfo
+    from homeassistant.helpers import device_registry as dr
+
+    mock_uss.cloud.return_value = None                       # silent at setup
+    await _setup(hass)
+    registry = dr.async_get(hass)
+    device = registry.async_get_device(identifiers={(DOMAIN, "A1B2C3D4E5F6")})
+    assert device is not None and device.sw_version is None
+
+    mock_uss.cloud.return_value = DeviceInfo(
+        device_id="A1B2C3D4E5F6",
+        host="192.168.1.50",
+        firmware=("e_4.3.00", "R_6.0.01"),
+        cloud_state=1000,
+    )
+    freezer.tick(timedelta(seconds=UDISCOVERY_INTERVAL + 1))
+    await _tick(hass, freezer)
+
+    device = registry.async_get_device(identifiers={(DOMAIN, "A1B2C3D4E5F6")})
+    assert device.sw_version == "e_4.3.00 / R_6.0.01"
+
+
 async def test_localkey_backup_sensor_carries_the_uplus_id(
     hass: HomeAssistant, mock_uss, entity_registry
 ) -> None:
@@ -1576,6 +1606,11 @@ async def test_ac_that_moved_on_dhcp_is_followed_automatically(
     assert entry.runtime_data.host == "192.168.1.77"
     # recovered inside the same cycle: the user never sees it go unavailable
     assert hass.states.get(CLIMATE).state == "cool"
+    # ...and the device page's link follows too, rather than pointing at the address it left
+    from homeassistant.helpers import device_registry as dr
+
+    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, "A1B2C3D4E5F6")})
+    assert device.configuration_url == "http://192.168.1.77"
 
 
 async def test_rediscovery_leaves_host_alone_when_nothing_matches(
