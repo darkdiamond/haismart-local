@@ -443,6 +443,88 @@ async def test_set_swing_mode_sends_toggle(hass: HomeAssistant, mock_uss) -> Non
     assert _sent_field(mock_uss.send, "windDirectionVertical") == 0x0C
 
 
+def _with_fields(frame: bytes, **fields: int) -> bytes:
+    """A status frame with grSetDAC fields set, packed by the library rather than by hand here."""
+    from haismart_hrdp import uss
+
+    layout = uss.status_layout(frame)
+    words = uss.grsetdac_baseline_from_status(frame)
+    for name, value in fields.items():
+        words = uss.set_grsetdac_field(words, name, value)
+    out = bytearray(frame)
+    out[layout.baseline] = words
+    return bytes(out)
+
+
+async def test_presets_are_offered_for_the_comfort_modes(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """eco / sleep / boost belong on the thermostat, not only on separate switches — that is what
+    makes them reachable from the climate card, a voice assistant and climate.set_preset_mode."""
+    await _setup(hass)
+
+    climate = hass.states.get(CLIMATE)
+    assert climate.attributes["preset_modes"] == ["none", "eco", "sleep", "boost"]
+    assert climate.attributes["preset_mode"] == "none"       # nothing set in the default frame
+
+
+async def test_setting_a_preset_clears_the_others_in_one_group_set(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """A preset is exclusive, and a group-set writes the whole attribute vector — so one op sets the
+    chosen field and clears the rest, instead of three switch writes in three sessions."""
+    await _setup(hass)
+    mock_uss.send.baseline = _with_fields(make_status_frame(), ecoMode=7)  # eco L3 currently on
+
+    await hass.services.async_call(
+        "climate", "set_preset_mode", {"entity_id": CLIMATE, "preset_mode": "boost"}, blocking=True
+    )
+    assert mock_uss.send.await_count == 1                    # one session, not one per field
+    assert _sent_field(mock_uss.send, "rapidMode") == 1
+    assert _sent_field(mock_uss.send, "ecoMode") == 0
+    assert _sent_field(mock_uss.send, "silentSleepStatus") == 0
+    # and the rest of the state is preserved, as any group-set must
+    assert _sent_field(mock_uss.send, "operationMode") == 1
+    assert _sent_field(mock_uss.send, "onOffStatus") == 1
+
+    await hass.services.async_call(
+        "climate", "set_preset_mode", {"entity_id": CLIMATE, "preset_mode": "none"}, blocking=True
+    )
+    assert _sent_field(mock_uss.send, "rapidMode") == 0
+    assert _sent_field(mock_uss.send, "ecoMode") == 0
+    assert _sent_field(mock_uss.send, "silentSleepStatus") == 0
+
+
+async def test_preset_reads_back_the_most_assertive_of_several(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """The fields are independent on the wire and the switches write them one at a time, so a unit
+    can have two on at once. Home Assistant needs one answer: the most assertive wins."""
+    mock_uss.read.return_value = [_with_fields(make_status_frame(), ecoMode=5)]
+    await _setup(hass)
+    assert hass.states.get(CLIMATE).attributes["preset_mode"] == "eco"
+
+    mock_uss.read.return_value = [
+        _with_fields(make_status_frame(), ecoMode=5, silentSleepStatus=1)
+    ]
+    await hass.config_entries.async_reload(hass.config_entries.async_entries(DOMAIN)[0].entry_id)
+    await hass.async_block_till_done()
+    assert hass.states.get(CLIMATE).attributes["preset_mode"] == "sleep"
+
+
+async def test_presets_absent_on_a_family_that_cannot_write_them(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """The compact-12 family's write map has none of these fields, so the control must not appear —
+    an offered preset that can only raise is worse than no preset."""
+    mock_uss.read.return_value = [make_compact12_frame()]
+    await _setup(hass)
+
+    climate = hass.states.get(CLIMATE)
+    assert "preset_modes" not in climate.attributes
+    assert "preset_mode" not in climate.attributes
+
+
 async def test_switch_toggles_confirmed_bit(hass: HomeAssistant, mock_uss) -> None:
     await _setup(hass)
     await hass.services.async_call(

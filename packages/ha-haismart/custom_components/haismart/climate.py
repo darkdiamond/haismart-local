@@ -10,6 +10,10 @@ from typing import Any
 
 from haismart_hrdp import GRSETDAC_ENUMS
 from homeassistant.components.climate import (
+    PRESET_BOOST,
+    PRESET_ECO,
+    PRESET_NONE,
+    PRESET_SLEEP,
     SWING_BOTH,
     SWING_HORIZONTAL,
     SWING_OFF,
@@ -40,6 +44,25 @@ _HVAC_TO_MODE = {v: k for k, v in _MODE_TO_HVAC.items()}
 # Fan-only mode on this unit won't accept fan=auto; when entering it (or if the user picks auto
 # while in it) we fall back to this concrete speed. "medium" is a neutral default airflow.
 _FAN_ONLY_DEFAULT_SPEED = "medium"
+
+# The comfort modes as Home Assistant's standard presets, in the order they are offered. Each is one
+# CONFIRMED grSetDAC field, already in the encoder's allowlist — nothing new reaches the wire; what
+# is new is that they are reachable from the thermostat card, a voice assistant and
+# `climate.set_preset_mode` rather than only from the switches and the eco select.
+#
+# ECO maps to the first of this unit's three levels; the select entity still chooses between them,
+# and the two agree because both read the same field. The unit's "quiet" (muteStatus) is
+# deliberately not a preset: it is a fan-noise setting that composes with any of these, and folding
+# it in would mean turning it off whenever a preset changes.
+_PRESET_FIELDS: dict[str, tuple[str, int]] = {
+    PRESET_ECO: ("ecoMode", GRSETDAC_ENUMS["ecoMode"]["level1"]),
+    PRESET_SLEEP: ("silentSleepStatus", 1),
+    PRESET_BOOST: ("rapidMode", 1),
+}
+# Read-back order. These fields are independent on the wire and the switches/select write them one
+# at a time, so a unit can genuinely have two of them on; Home Assistant needs a single answer, so
+# the most assertive setting wins — boost is doing the most to the unit, eco the least.
+_PRESET_PRECEDENCE = (PRESET_BOOST, PRESET_SLEEP, PRESET_ECO)
 
 
 async def async_setup_entry(
@@ -94,6 +117,16 @@ class HaismartClimate(HaismartEntity, ClimateEntity):
         self._attr_min_temp = profile.min_temp
         self._attr_max_temp = profile.max_temp
         self._attr_target_temperature_step = profile.temp_step
+        # Only offer the presets whose field this unit's report family can actually write: a family
+        # without the secondary toggles would otherwise get a control that always raises.
+        presets = [
+            preset
+            for preset, (field, _) in _PRESET_FIELDS.items()
+            if coordinator.supports_field(field)
+        ]
+        if presets:
+            self._attr_preset_modes = [PRESET_NONE, *presets]
+            self._attr_supported_features |= ClimateEntityFeature.PRESET_MODE
 
     @property
     def _state(self) -> dict[str, Any]:
@@ -134,6 +167,47 @@ class HaismartClimate(HaismartEntity, ClimateEntity):
         if horizontal:
             return SWING_HORIZONTAL
         return SWING_OFF
+
+    @property
+    def preset_mode(self) -> str | None:
+        """The active comfort preset, or ``None`` until a status report has been read.
+
+        Two of these can be on at the same time — the switches and the eco select write the fields
+        independently — so the answer is the most assertive one that is on (_PRESET_PRECEDENCE).
+        """
+        known = False
+        for preset in _PRESET_PRECEDENCE:
+            if preset not in (self._attr_preset_modes or ()):
+                continue
+            value = self.coordinator.current_field(_PRESET_FIELDS[preset][0])
+            if value:
+                return preset
+            known = known or value is not None
+        return PRESET_NONE if known else None
+
+    async def async_set_preset_mode(self, preset_mode: str) -> None:
+        """Select one preset and clear the rest, in a single group-set.
+
+        Exclusivity is what a preset means, and a group-set is one atomic write of the whole
+        attribute vector — so this cannot leave two of them on, and it costs one session where
+        setting the switches by hand costs one each.
+        """
+        offered = self._attr_preset_modes or ()
+        if preset_mode not in offered:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="unsupported_value",
+                translation_placeholders={
+                    "name": self.name or "this air conditioner",
+                    "value": str(preset_mode),
+                    "field": "preset",
+                },
+            )
+        await self.coordinator.async_send_control({
+            field: (on if preset == preset_mode else 0)
+            for preset, (field, on) in _PRESET_FIELDS.items()
+            if preset in offered
+        })
 
     def _mode_code(self, token: str | None) -> int | None:
         """Raw operationMode code for a normalized token, from the DEVICE'S own profile first.

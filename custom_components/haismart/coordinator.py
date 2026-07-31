@@ -32,6 +32,7 @@ from haismart_extractor import (
 )
 from haismart_extractor.cloud import SEA_APP_CREDENTIALS, CloudError
 from haismart_hrdp import (
+    GRSETDAC_FIELDS,
     GRSETDAC_MODEL_AUTHORIZED,
     STATUS_LAYOUTS,
     AttributeProfile,
@@ -823,6 +824,19 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """The AC's current localKey (kept fresh across gateway auto-refresh). For the opt-in backup
         sensor — it's a secret, so that entity is diagnostic + disabled by default."""
         return self._local_key
+
+    def supports_field(self, name: str) -> bool:
+        """Whether a control field can be written on the family this unit actually reports.
+
+        The classic family's write map is :data:`GRSETDAC_FIELDS`; a non-classic family carries its
+        own, which is generally smaller — compact-12 has none of the secondary toggles, extended-46
+        no swing, and neither has this unit's multi-level ``ecoMode``. A control that advertises a
+        field its family cannot place could only ever raise, so the entities that group several
+        fields into one control ask here before offering themselves.
+        """
+        if (wm := self._wire_model) is not None:
+            return name in wm.write_fields
+        return name in GRSETDAC_FIELDS
 
     def current_field(self, name: str) -> int | None:
         """The live raw EPP value of a grSetDAC field (for the toggle/select entities), or None.
