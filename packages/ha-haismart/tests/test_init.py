@@ -36,6 +36,7 @@ from custom_components.haismart.const import (
     TELEMETRY_MAX_AGE,
     UDISCOVERY_INTERVAL,
     UDISCOVERY_MISSES,
+    UDISCOVERY_RETIRE_INTERVAL,
 )
 
 CLIMATE = "climate.downstairs_ac"
@@ -1349,12 +1350,12 @@ async def test_silent_unit_reads_unknown_not_disconnected(
     assert state.attributes["raw_state"] is None
 
 
-async def test_cloud_query_is_throttled_and_then_abandoned(
+async def test_cloud_query_is_throttled_and_then_backed_off(
     hass: HomeAssistant, mock_uss, freezer
 ) -> None:
     """Two behaviours that keep this cheap: the query runs on its own slow cadence rather than every
     status read (the flag only moves on a ~4-minute timescale), and a unit that stays silent while
-    demonstrably reachable stops being asked at all."""
+    demonstrably reachable stops being asked on that cadence."""
     await _setup(hass)
     assert mock_uss.cloud.await_count == 1
 
@@ -1366,10 +1367,46 @@ async def test_cloud_query_is_throttled_and_then_abandoned(
         freezer.tick(timedelta(seconds=UDISCOVERY_INTERVAL + 1))
         await _tick(hass, freezer)
     # the successful query at setup, then exactly UDISCOVERY_MISSES silent ones, then it stops
+    # asking on the minute cadence (see the retry test below for what happens an hour later)
     assert mock_uss.cloud.await_count == 1 + UDISCOVERY_MISSES
 
     # ...and the entity says "unknown" rather than inventing a state
     assert hass.states.get(CLOUD).state == "unknown"
+
+
+async def test_a_silent_unit_is_retried_an_hour_later(
+    hass: HomeAssistant, mock_uss, freezer
+) -> None:
+    """Backing off must not mean giving up for the rest of the run.
+
+    Three lost datagrams in a row is something a busy access point does, and a module can gain the
+    capability in a firmware update — so an hour later it is asked again, and an answer restores the
+    sensor, the firmware version and the cloud-free uPlusId learning.
+    """
+    from haismart_hrdp.udiscovery import DeviceInfo
+
+    mock_uss.cloud.return_value = None
+    entry = await _setup(hass)
+    for _ in range(UDISCOVERY_MISSES + 1):
+        freezer.tick(timedelta(seconds=UDISCOVERY_INTERVAL + 1))
+        await _tick(hass, freezer)
+    assert entry.runtime_data.supports_udiscovery is False
+    asked_when_given_up = mock_uss.cloud.await_count
+
+    # nothing more on the minute cadence...
+    freezer.tick(timedelta(seconds=UDISCOVERY_INTERVAL + 1))
+    await _tick(hass, freezer)
+    assert mock_uss.cloud.await_count == asked_when_given_up
+
+    # ...but an hour later it tries again, and the unit is answering now
+    mock_uss.cloud.return_value = DeviceInfo(
+        device_id="A1B2C3D4E5F6", host="192.168.1.50", cloud_state=1000, firmware=("1.2.3",)
+    )
+    freezer.tick(timedelta(seconds=UDISCOVERY_RETIRE_INTERVAL))
+    await _tick(hass, freezer)
+    assert mock_uss.cloud.await_count == asked_when_given_up + 1
+    assert entry.runtime_data.supports_udiscovery is True
+    assert hass.states.get(CLOUD).state == "on"
 
 
 async def test_cloud_query_failure_never_breaks_polling(

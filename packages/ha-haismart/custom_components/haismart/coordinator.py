@@ -86,6 +86,7 @@ from .const import (
     TELEMETRY_MAX_AGE,
     UDISCOVERY_INTERVAL,
     UDISCOVERY_MISSES,
+    UDISCOVERY_RETIRE_INTERVAL,
     UDISCOVERY_TIMEOUT,
     WRITE_TIMEOUT,
 )
@@ -429,9 +430,11 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         One UDP round trip on :7083, no localKey and no account involved -- which is the point: it
         lets someone who has firewalled their AC confirm the block holds without asking Haier
         anything. Never raises: this is a diagnostic signal and must not be able to fail a poll.
+
+        A unit that stays silent is backed off to UDISCOVERY_RETIRE_INTERVAL rather than abandoned:
+        the answer can come back (a firmware update, or simply an access point that stopped eating
+        the datagrams), and one query an hour costs nothing against what giving up loses.
         """
-        if self.supports_udiscovery is False:
-            return
         now = self.hass.loop.time()
         if now < self._udiscovery_next:
             return
@@ -446,11 +449,14 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.cloud_connected = None
             self._udiscovery_misses += 1
             if self._udiscovery_misses >= UDISCOVERY_MISSES:
-                self.supports_udiscovery = False
-                _LOGGER.debug(
-                    "%s does not answer the UDISCOVERY query; the cloud-connection sensor will "
-                    "stay unavailable for this unit", self.host,
-                )
+                self._udiscovery_next = now + UDISCOVERY_RETIRE_INTERVAL
+                if self.supports_udiscovery is not False:
+                    self.supports_udiscovery = False
+                    _LOGGER.debug(
+                        "%s does not answer the UDISCOVERY query; the cloud-connection sensor will "
+                        "stay unavailable for this unit, and the query drops to one attempt every "
+                        "%.0f s in case that changes", self.host, UDISCOVERY_RETIRE_INTERVAL,
+                    )
             return
         self._udiscovery_misses = 0
         self.supports_udiscovery = True
