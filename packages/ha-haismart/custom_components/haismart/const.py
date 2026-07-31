@@ -68,6 +68,12 @@ REDISCOVER_COOLDOWN = 300.0  # seconds between attempts
 # slow-moving measurements, so a value from seconds ago beats a gap, while a unit that has genuinely
 # stopped reporting still ends up honestly unknown rather than frozen on an old number.
 TELEMETRY_MAX_AGE = 120.0    # seconds a previous extended reading may stand in for a missing one
+# Consecutive cycles that carry status but no extended report before we conclude the unit does not
+# answer that query and stop appending it. More than one, because a single reply can simply be
+# dropped and the conclusion is expensive: it removes the power, current, frequency, coil,
+# discharge, compressor and fan entities for the rest of the run. Same reasoning as
+# UDISCOVERY_MISSES.
+EXTENDED_MISSES = 3
 
 CONF_SCAN_INTERVAL = "scan_interval"
 DEFAULT_SCAN_INTERVAL = 30  # seconds between read cycles (each is handshake+collect+close)

@@ -78,6 +78,7 @@ from .const import (
     DEFAULT_PRODUCT_CODE,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    EXTENDED_MISSES,
     ISSUE_STALE_LOCALKEY,
     ISSUE_UNKNOWN_LAYOUT,
     READ_TIMEOUT,
@@ -217,6 +218,8 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # None = not yet known; settled on the first cycle that produces a status report.
         self.supports_extended: bool | None = None
         self._ask_extended = True
+        # consecutive cycles that carried status but no extended report (see EXTENDED_MISSES)
+        self._extended_misses = 0
         # The last extended reading actually reported, with when it arrived and the on/off state it
         # described. A cycle that carries no extended report re-publishes it (see
         # `_apply_telemetry`) so a control op does not blank the telemetry entities.
@@ -326,29 +329,51 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 if telemetry:
                     self.supports_extended = True
+                    self._extended_misses = 0
+                elif self.supports_extended is True and not self._ask_extended:
+                    # The query was paused by an empty cycle (see below), and reads are working
+                    # again — so ask for the extended report again rather than leaving a unit that
+                    # has already answered one without its telemetry for the rest of the run.
+                    self._ask_extended = True
                 elif self._ask_extended and self.supports_extended is None:
-                    # Status arrived but no extended report: this unit does not offer one. Stop
-                    # asking rather than appending a frame it ignores on every poll from now on.
-                    self.supports_extended = False
-                    self._ask_extended = False
-                    _LOGGER.debug(
-                        "%s does not answer the extended-status query; the power and compressor "
-                        "sensors will stay unavailable for this unit", self.host,
-                    )
+                    # Status arrived but no extended report, which usually means this unit does not
+                    # offer one -- so stop appending a frame it ignores on every poll from now on.
+                    # But not on the first cycle: a single reply can simply be dropped, and writing
+                    # the capability off costs the unit seven entities until the entry is reloaded.
+                    # Same reasoning (and the same threshold) as UDISCOVERY_MISSES.
+                    self._extended_misses += 1
+                    if self._extended_misses >= EXTENDED_MISSES:
+                        self.supports_extended = False
+                        self._ask_extended = False
+                        _LOGGER.debug(
+                            "%s did not answer the extended-status query in %d cycles; the power "
+                            "and compressor sensors will stay unavailable for this unit",
+                            self.host, EXTENDED_MISSES,
+                        )
                 self._apply_telemetry(state, telemetry)
                 return state
 
         # Connected fine but nothing decoded — either the AC pushed no full report this
         # cycle (transient) or every biz payload failed the MD5 check (stale localKey).
-        # If we appended the extended query, retire it first so the next cycle retries with a plain
-        # read: a unit that cannot cope with the extra frame must not lose its status because of it.
+        # If we appended the extended query, stop asking for now so the next cycle retries with a
+        # plain read: a unit that cannot cope with the extra frame must not lose its status over it.
         if self._ask_extended:
             self._ask_extended = False
-            self.supports_extended = False
-            _LOGGER.debug(
-                "no decodable status from %s while asking for extended status; dropping the extra "
-                "query and retrying with a plain read", self.host,
-            )
+            if self.supports_extended is True:
+                # This unit HAS answered the extended query, so the extra frame is not what broke
+                # this cycle — a stale key or a dropped push is. Pause it for one cycle to be sure,
+                # then re-arm above once a status decodes again. Concluding "unsupported" here used
+                # to be permanent, so one empty cycle took the telemetry entities out for good.
+                _LOGGER.debug(
+                    "no decodable status from %s; pausing the extended-status query for one cycle "
+                    "(this unit has answered it before)", self.host,
+                )
+            else:
+                self.supports_extended = False
+                _LOGGER.debug(
+                    "no decodable status from %s while asking for extended status; dropping the "
+                    "extra query and retrying with a plain read", self.host,
+                )
         self._log_undecodable(blobs)
         self._misses += 1
         # capture BEFORE the probe below resets it, or the message always reports 0

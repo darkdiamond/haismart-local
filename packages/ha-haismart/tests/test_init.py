@@ -31,6 +31,7 @@ from custom_components.haismart.const import (
     CONF_UPLUS_ID,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    EXTENDED_MISSES,
     REDISCOVER_COOLDOWN,
     TELEMETRY_MAX_AGE,
     UDISCOVERY_INTERVAL,
@@ -137,6 +138,9 @@ async def test_unit_without_extended_status_stops_asking(
 ) -> None:
     """A unit that ignores the extended query keeps working, and we stop appending the frame.
 
+    It takes EXTENDED_MISSES cycles rather than one, because a single dropped reply must not be
+    mistaken for a unit that has no extended report at all.
+
     The sensors are still created (so they appear if a firmware update ever answers) but report
     unknown rather than a made-up zero.
     """
@@ -144,16 +148,93 @@ async def test_unit_without_extended_status_stops_asking(
     entry = await _setup(hass)
     assert entry.state is ConfigEntryState.LOADED
     coordinator = entry.runtime_data
-    assert coordinator.supports_extended is False
+    assert coordinator.supports_extended is None             # not concluded yet, one cycle in
 
     power = hass.states.get("sensor.downstairs_ac_power")
     assert power is not None and power.state == "unknown"
+
+    for _ in range(EXTENDED_MISSES - 1):
+        await _tick(hass, freezer)
+    assert coordinator.supports_extended is False
 
     # and the next poll must not ask again
     mock_uss.read.reset_mock()
     await _tick(hass, freezer)
     for call in mock_uss.read.await_args_list:
         assert call.kwargs.get("extra_request") is None
+
+
+def _honest_read(*, answer_from_ask: int = 1, empty: dict | None = None):
+    """A read side effect that returns an extended report ONLY on a cycle that asked for one.
+
+    `mock_uss.read.return_value` cannot express that — it hands back the extended frame whether or
+    not the coordinator appended the query — and that difference is the whole subject of the two
+    tests below. ``answer_from_ask`` is the first ask that gets an answer (earlier ones dropped);
+    ``empty``, if given, is a dict whose truthy ``["now"]`` makes a cycle decode nothing at all.
+    """
+    asks: list[bool] = []
+
+    async def _read(*args, **kwargs):
+        asked = kwargs.get("extra_request") is not None
+        asks.append(asked)
+        if empty is not None and empty.get("now"):
+            return []
+        frames = [make_status_frame()]
+        if asked and sum(asks) >= answer_from_ask:
+            frames.append(make_extended_frame())
+        return frames
+
+    _read.asks = asks
+    return _read
+
+
+async def test_one_missing_extended_reply_does_not_retire_the_query(
+    hass: HomeAssistant, mock_uss, freezer
+) -> None:
+    """A single cycle without an extended report must keep asking.
+
+    Retiring on the first miss meant one dropped reply cost the unit its power, current, frequency,
+    coil, discharge, compressor and fan entities until the entry was reloaded.
+    """
+    mock_uss.read.side_effect = _honest_read(answer_from_ask=2)  # the first reply is dropped
+    entry = await _setup(hass)
+    coordinator = entry.runtime_data
+    assert coordinator.supports_extended is None             # not written off after one miss
+
+    await _tick(hass, freezer)                                # asked again, and answered this time
+    assert coordinator.supports_extended is True
+    power = hass.states.get("sensor.downstairs_ac_power")
+    assert power is not None and float(power.state) == 910.0
+
+
+async def test_empty_cycle_does_not_disprove_a_proven_extended_unit(
+    hass: HomeAssistant, mock_uss, freezer
+) -> None:
+    """A cycle that decodes nothing says nothing about the extended query.
+
+    It is the localKey-rotation window or a dropped push, not the extra frame — so a unit that has
+    already answered one keeps its telemetry: the query pauses for a cycle and is re-armed as soon
+    as status decodes again.
+    """
+    outage = {"now": False}
+    read = _honest_read(empty=outage)
+    mock_uss.read.side_effect = read
+    entry = await _setup(hass)
+    coordinator = entry.runtime_data
+    assert coordinator.supports_extended is True
+
+    outage["now"] = True                                      # nothing decodes this cycle
+    await _tick(hass, freezer)
+    assert coordinator.supports_extended is True              # still believed, only paused
+    assert read.asks[-1] is True
+
+    outage["now"] = False
+    await _tick(hass, freezer)                                # plain read works again -> re-arm
+    assert read.asks[-1] is False
+
+    await _tick(hass, freezer)                                # asking again, and answered
+    assert read.asks[-1] is True
+    assert float(hass.states.get("sensor.downstairs_ac_power").state) == 910.0
 
 
 async def test_powered_off_reports_hvac_off(hass: HomeAssistant, mock_uss) -> None:
