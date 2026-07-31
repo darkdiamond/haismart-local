@@ -1,6 +1,7 @@
 """Entry setup, coordinator read cycle, entity state, and localKey-rotation reauth."""
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import timedelta
 
@@ -452,6 +453,74 @@ async def test_control_falls_back_to_read_when_reply_has_no_status(
     assert hass.states.get(CLIMATE).attributes["temperature"] == 26.0
     # one read: the post-op fallback confirmation cycle (the baseline came from the op's own push)
     assert mock_uss.read.await_count == reads_after_setup + 1
+
+
+async def test_concurrent_commands_never_share_the_session(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """Two commands at once must not open two uSS sessions.
+
+    Applying a scene fires its entities concurrently, so a scene that carries the thermostat *and*
+    one of the switches sends two control ops with nothing in between. These units accept one
+    connection at a time, and each op seeds its group-set from the status the AC pushes on its OWN
+    connection — so an overlap does not half-apply, it REVERTS: the second baseline predates the
+    first change and a group-set rewrites the whole attribute vector.
+    """
+    await _setup(hass)
+    depth = peak = 0
+    frames: list[bytes] = []
+
+    async def _slow_op(*args, **kwargs):
+        nonlocal depth, peak
+        depth += 1
+        peak = max(peak, depth)
+        await asyncio.sleep(0.01)      # an unserialized second op would land inside this window
+        frames.append(kwargs["build_frame"](mock_uss.send.baseline))
+        depth -= 1
+        return [make_status_frame()]
+
+    mock_uss.send.side_effect = _slow_op
+    await asyncio.gather(
+        hass.services.async_call(
+            "climate", "set_temperature", {"entity_id": CLIMATE, "temperature": 22}, blocking=True
+        ),
+        hass.services.async_call(
+            "switch", "turn_on", {"entity_id": "switch.downstairs_ac_sleep"}, blocking=True
+        ),
+    )
+    assert peak == 1            # one session at a time
+    assert len(frames) == 2     # and neither command was dropped to get there
+
+
+async def test_a_command_waits_for_the_poll_holding_the_session(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """A command that lands mid-poll queues behind it instead of opening a second connection."""
+    entry = await _setup(hass)
+    order: list[str] = []
+    reading = asyncio.Event()
+
+    async def _slow_read(*args, **kwargs):
+        order.append("read-start")
+        reading.set()
+        await asyncio.sleep(0.01)
+        order.append("read-end")
+        return [make_status_frame()]
+
+    async def _op(*args, **kwargs):
+        order.append("op")
+        kwargs["build_frame"](mock_uss.send.baseline)
+        return [make_status_frame(target_temp=22)]
+
+    mock_uss.read.side_effect = _slow_read
+    mock_uss.send.side_effect = _op
+    poll = hass.async_create_task(entry.runtime_data.async_refresh())
+    await reading.wait()
+    await hass.services.async_call(
+        "climate", "set_temperature", {"entity_id": CLIMATE, "temperature": 22}, blocking=True
+    )
+    await poll
+    assert order == ["read-start", "read-end", "op"]
 
 
 async def test_control_keeps_the_telemetry_readings(hass: HomeAssistant, mock_uss) -> None:

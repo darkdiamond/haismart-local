@@ -15,6 +15,7 @@ ConfigEntryAuthFailed so HA starts a reauth flow for the new key.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Callable
@@ -254,6 +255,15 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # the non-classic wire model in use (set on decode), or None for the classic family. Drives
         # the family-specific control encoder.
         self._wire_model: WireModel | None = None
+        # These units accept ONE connection at a time (§2.1), and nothing in Home Assistant
+        # serializes a command against a poll — or against another command: applying a scene fires
+        # its entities concurrently, so one carrying the thermostat and a switch sends two ops at
+        # once. Every uSS session therefore goes through this lock. It is not only about the refused
+        # second connection: a control op seeds its group-set from the status the AC pushes on the
+        # op's OWN connection, so two overlapping ops each seed from a baseline taken before the
+        # other applied, and a group-set writes the WHOLE attribute vector — so the later reply
+        # silently reverts the earlier change instead of half-applying it.
+        self._session = asyncio.Lock()
         super().__init__(
             hass,
             _LOGGER,
@@ -353,11 +363,12 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     async def _async_read(self) -> list[bytes]:
-        """One read cycle against the current host."""
-        return await async_read_status(
-            self.host, self.device_id, self._local_key, timeout=READ_TIMEOUT,
-            extra_request=extended_status_epp_frame() if self._ask_extended else None,
-        )
+        """One read cycle against the current host, holding the single-session lock."""
+        async with self._session:
+            return await async_read_status(
+                self.host, self.device_id, self._local_key, timeout=READ_TIMEOUT,
+                extra_request=extended_status_epp_frame() if self._ask_extended else None,
+            )
 
     async def _async_rediscover_host(self) -> bool:
         """Find this AC at a new address after a failed read. ``True`` if the host changed.
@@ -639,10 +650,15 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # One short session: the CAE counter starts at 1 and the biz sequence base is
             # auto-derived from HELLO_DONE_RESP (a wrong sn drops the connection). build_frame
             # seeds from the AC's in-session status push.
-            reply = await async_send_op(
-                self.host, self.device_id, self._local_key,
-                build_frame=_build, counter=1, timeout=WRITE_TIMEOUT,
-            )
+            # Under the session lock, so this op cannot overlap a poll or a second command: the
+            # baseline `_build` seeds from must be the state left by whatever ran before it. Waiting
+            # costs at most one read (READ_TIMEOUT), against an op that would otherwise be refused
+            # by the AC or quietly undone by the other one.
+            async with self._session:
+                reply = await async_send_op(
+                    self.host, self.device_id, self._local_key,
+                    build_frame=_build, counter=1, timeout=WRITE_TIMEOUT,
+                )
         except HomeAssistantError:
             raise
         except (ValueError, KeyError) as err:
@@ -772,11 +788,13 @@ class HaismartCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         localKey from the Haier cloud MQTT gateway; only fall back to a manual reauth flow if the
         gateway refresh isn't configured or fails."""
         try:
-            current = await self.hass.async_add_executor_job(
-                partial(
-                    probe_localkey_version, self.host, self.device_id, timeout=READ_TIMEOUT
+            # Also a uSS session (a handshake, key-free), so it takes the same lock.
+            async with self._session:
+                current = await self.hass.async_add_executor_job(
+                    partial(
+                        probe_localkey_version, self.host, self.device_id, timeout=READ_TIMEOUT
+                    )
                 )
-            )
         except (OSError, RuntimeError) as err:
             raise UpdateFailed(f"localKey version probe failed: {err}") from err
         if self.localkey_version is None or current == self.localkey_version:
