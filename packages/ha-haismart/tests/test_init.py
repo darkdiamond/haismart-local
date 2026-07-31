@@ -274,6 +274,23 @@ async def test_compact12_family_decodes_and_controls_via_4d5f(
     assert words[(12 - 1) * 2 + 1] == 24 - 16  # setpoint packed at word 12
 
 
+async def test_compact12_omits_the_controls_it_cannot_write(
+    hass: HomeAssistant, mock_uss
+) -> None:
+    """A family whose write map has none of the secondary fields must not get their entities.
+
+    They used to be created regardless, so a compact-12 unit showed five switches and an eco select
+    that read `unknown` forever and raised the moment they were touched.
+    """
+    mock_uss.read.return_value = [make_compact12_frame()]
+    await _setup(hass)
+
+    assert hass.states.get(CLIMATE) is not None                  # the climate entity still works
+    assert hass.states.get("switch.downstairs_ac_sleep") is None
+    assert hass.states.get("switch.downstairs_ac_strong") is None
+    assert hass.states.get("select.downstairs_ac_eco") is None
+
+
 async def test_extended36_family_decodes_and_controls_from_word_20(
     hass: HomeAssistant, mock_uss
 ) -> None:
